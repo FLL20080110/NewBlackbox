@@ -66,23 +66,17 @@ JavaVM *BoxCore::getJavaVM() {
 }
 
 void nativeHook(JNIEnv *env) {
-    BaseHook::init(env);
-
-    // This hook is based on libc symbol interposition rather than private
-    // ArtMethod layout and remains enabled on Android 16.
-    FileSystemHook::init();
-
-    // Android 16 / API 36: runtime probing can report a plausible ArtMethod
-    // layout while the resulting original JNI entry is still invalid for a
-    // guest process. On the test device this repeatedly produced an indirect
-    // jump to 0x88c after enabling the legacy JNI hooks. Fail closed here and
-    // restore these hooks one by one only after they have API-36-specific
-    // validation. This keeps the stable non-ArtMethod IO redirection active.
+    // Android 16 diagnostic mode: skip every native hook, including BaseHook
+    // and libc FileSystemHook. The previous build still crashed after all
+    // ArtMethod-based hooks were disabled, so this isolates whether any native
+    // interposition layer is responsible for the remaining failure.
     if (VMEnv.api_level >= 36) {
-        ALOGD("NativeCore: API36 stable mode, skipping ArtMethod JNI hooks");
+        ALOGD("NativeCore: API36 diagnostic mode, skipping ALL native hooks");
         return;
     }
 
+    BaseHook::init(env);
+    FileSystemHook::init();
     UnixFileSystemHook::init(env);
     VMClassLoaderHook::init(env);
     BinderHook::init(env);
