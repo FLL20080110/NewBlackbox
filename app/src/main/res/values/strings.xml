@@ -71,4 +71,12 @@
     <string name="send_logs_summary">Manually upload device information and Logcat to the developer log service. Logs may contain sensitive information.</string>
     <string name="sending_logs">Sending logs. Check notifications for status.</string>
     <string name="add_app">Add app</string>
+    <string name="storage_permission_required">Storage Permission Required</string>
+    <string name="storage_permission_message">This app needs All Files Access permission to properly run sandboxed apps. Without it, some apps may not work correctly.\n\nPlease grant permission on the next screen.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="later">Later</string>
+    <string name="error">Error</string>
+    <string name="ok">OK</string>
+    <string name="user_label">User %1$d</string>
+    <string name="initialization_failed">Failed to initialize app: %1$s</string>
 </resources>
