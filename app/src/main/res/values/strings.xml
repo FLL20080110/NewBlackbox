@@ -12,7 +12,7 @@
     <string name="tg_group">Telegram Group</string>
     <string name="fake_location">Fake Location(Preview)</string>
     <string name="real_location">Real Location</string>
-    <string name="set_location">Set Fake Location Successfully:%s-%s</string>
+    <string name="set_location">Set Fake Location Successfully:%1$s-%2$s</string>
     <string name="close_fake_location">Disable FakeLocation</string>
     <string name="close_app_fake_location">Disable FakeLocation for %s</string>
     <string name="close_fake_location_success">Disable FakeLocation for %s Successfully</string>
@@ -67,4 +67,16 @@
     <string name="disable_gms">Disable Service</string>
     <string name="disable_gms_hint">Clear the current Google service environment? Google service data will be cleared.</string>
     <string name="no_gms">Currently, there is no Google service environment on mobile phones.</string>
+    <string name="send_logs">Send Debug Logs</string>
+    <string name="send_logs_summary">Manually upload device information and Logcat to the developer log service. Logs may contain sensitive information.</string>
+    <string name="sending_logs">Sending logs. Check notifications for status.</string>
+    <string name="add_app">Add app</string>
+    <string name="storage_permission_required">Storage Permission Required</string>
+    <string name="storage_permission_message">This app needs All Files Access permission to properly run sandboxed apps. Without it, some apps may not work correctly.\n\nPlease grant permission on the next screen.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="later">Later</string>
+    <string name="error">Error</string>
+    <string name="ok">OK</string>
+    <string name="user_label">User %1$d</string>
+    <string name="initialization_failed">Failed to initialize app: %1$s</string>
 </resources>

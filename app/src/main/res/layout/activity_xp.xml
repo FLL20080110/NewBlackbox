@@ -13,7 +13,6 @@
                 android:id="@+id/toolbar_layout"
                 layout="@layout/view_toolbar" />
 
-
         <com.github.nukc.stateview.StateView
                 android:id="@+id/stateView"
                 android:layout_width="match_parent"
@@ -24,7 +23,6 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 
-
     </LinearLayout>
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -33,6 +31,6 @@
             android:layout_height="wrap_content"
             android:layout_gravity="end|bottom"
             android:layout_margin="24dp"
-            android:contentDescription="TODO"
+            android:contentDescription="@string/add_app"
             android:src="@drawable/ic_add" />
 </FrameLayout>

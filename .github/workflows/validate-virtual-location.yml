@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - virtual-location-bridge
+      - zh-cn-localization
   workflow_dispatch:
 
 jobs:
@@ -29,12 +30,15 @@ jobs:
       - name: Grant Gradle execute permission
         run: chmod +x ./gradlew
 
+      - name: Apply Android 16 bind diagnostics patch
+        run: python3 scripts/android16_bind_diagnostics.py
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
       - name: Upload debug APKs
         uses: actions/upload-artifact@v4
         with:
-          name: newblackbox-virtual-location-debug
+          name: newblackbox-android16-diagnostics
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
