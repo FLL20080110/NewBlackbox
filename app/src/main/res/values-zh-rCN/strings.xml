@@ -71,4 +71,12 @@
     <string name="send_logs_summary">手动上传设备信息和 Logcat 到开发者日志服务。日志可能包含敏感信息，请确认后再使用。</string>
     <string name="sending_logs">正在发送日志，请查看通知了解结果。</string>
     <string name="add_app">添加应用</string>
+    <string name="storage_permission_required">需要存储权限</string>
+    <string name="storage_permission_message">为了正常运行沙盒应用，黑盒需要“所有文件访问权限”。如果不授予，部分应用可能无法正常读写文件。\n\n请在下一页面授予该权限。</string>
+    <string name="grant_permission">授予权限</string>
+    <string name="later">稍后</string>
+    <string name="error">错误</string>
+    <string name="ok">确定</string>
+    <string name="user_label">用户 %1$d</string>
+    <string name="initialization_failed">应用初始化失败：%1$s</string>
 </resources>
