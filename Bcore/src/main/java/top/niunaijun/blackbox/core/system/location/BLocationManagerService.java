@@ -176,6 +176,12 @@ public class BLocationManagerService extends IBLocationManagerService.Stub imple
 
     @Override
     public BLocation getLocation(int userId, String pkg) {
+        synchronized (mGlobalConfig) {
+            if (mGlobalConfig.location != null) {
+                return mGlobalConfig.location;
+            }
+        }
+
         BLocationConfig config = getOrCreateConfig(userId, pkg);
         switch (config.pattern) {
             case BLocationManager.OWN_MODE:
