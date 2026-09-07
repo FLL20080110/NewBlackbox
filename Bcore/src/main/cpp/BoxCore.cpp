@@ -68,20 +68,18 @@ JavaVM *BoxCore::getJavaVM() {
 void nativeHook(JNIEnv *env) {
     BaseHook::init(env);
 
-    // Android 16 (API 36) changed ART/libcore internals used by the legacy
-    // ArtMethod based JNI hook implementation.  If the inferred native-entry
-    // offset is wrong, orig_* may become a small garbage address (for example
-    // 0x88c) and the first call through it crashes the virtual process with
-    // SIGSEGV.  Fail closed on API 36+ until the JNI hooks have an API-36
-    // specific implementation.  Keep the non-ArtMethod filesystem setup.
-    if (VMEnv.api_level >= 36) {
-        ALOGD("NativeCore: Android 16+, skipping legacy ArtMethod JNI hooks");
-        FileSystemHook::init();
-        return;
-    }
-
-    UnixFileSystemHook::init(env);
+    // FileSystemHook does not depend on the legacy ArtMethod JNI replacement
+    // and is safe to initialize independently.
     FileSystemHook::init();
+
+    // JniHook::InitJniHook performs runtime ART layout probing. The hardened
+    // implementation now leaves HookEnv.initialized=false unless all inferred
+    // sizes/offsets pass bounds and JNI exception checks. Every HookJniFun()
+    // also re-validates the original native entry (including rejecting tiny
+    // garbage addresses such as the observed 0x88c). Therefore API 36 no
+    // longer needs a blanket disable here: supported hooks install only when
+    // the runtime probe is trustworthy, otherwise each call fails closed.
+    UnixFileSystemHook::init(env);
     VMClassLoaderHook::init(env);
     BinderHook::init(env);
     DexFileHook::init(env);
