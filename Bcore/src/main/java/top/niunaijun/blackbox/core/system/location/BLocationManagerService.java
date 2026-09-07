@@ -176,6 +176,15 @@ public class BLocationManagerService extends IBLocationManagerService.Stub imple
 
     @Override
     public BLocation getLocation(int userId, String pkg) {
+        // A configured global location is a container-wide override. This is intentionally
+        // checked before the legacy per-package mode so every guest sees the same location
+        // without requiring individual package configuration.
+        synchronized (mGlobalConfig) {
+            if (mGlobalConfig.location != null) {
+                return mGlobalConfig.location;
+            }
+        }
+
         BLocationConfig config = getOrCreateConfig(userId, pkg);
         switch (config.pattern) {
             case BLocationManager.OWN_MODE:

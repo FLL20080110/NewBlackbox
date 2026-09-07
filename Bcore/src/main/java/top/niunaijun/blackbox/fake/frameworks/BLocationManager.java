@@ -29,8 +29,37 @@ public class BLocationManager extends BlackManager<IBLocationManagerService> {
         return ServiceManager.LOCATION_MANAGER;
     }
 
+    /**
+     * Returns whether the current guest should receive a virtual location.
+     *
+     * A non-null global location acts as a container-wide override. This lets the host
+     * configure one location for every guest without enabling fake location package by
+     * package. If no global override is configured, the legacy per-package pattern is
+     * preserved unchanged.
+     */
     public static boolean isFakeLocationEnable() {
+        if (get().getGlobalLocation() != null) {
+            return true;
+        }
         return get().getPattern(BActivityThread.getUserId(), BActivityThread.getAppPackageName()) != CLOSE_MODE;
+    }
+
+    /**
+     * Enable a single virtual location for all applications running inside BlackBox.
+     * Passing null is treated as disabling the container-wide override.
+     */
+    public void setContainerLocation(BLocation location) {
+        setGlobalLocation(location);
+    }
+
+    /** Disable the container-wide location override and restore legacy behaviour. */
+    public void clearContainerLocation() {
+        setGlobalLocation(null);
+    }
+
+    /** Returns true when a container-wide location override is active. */
+    public boolean isContainerLocationEnabled() {
+        return getGlobalLocation() != null;
     }
 
     public static void disableFakeLocation(int userId,String pkg){
