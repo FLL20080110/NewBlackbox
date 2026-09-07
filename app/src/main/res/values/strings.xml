@@ -67,4 +67,8 @@
     <string name="disable_gms">Disable Service</string>
     <string name="disable_gms_hint">Clear the current Google service environment? Google service data will be cleared.</string>
     <string name="no_gms">Currently, there is no Google service environment on mobile phones.</string>
+    <string name="send_logs">Send Debug Logs</string>
+    <string name="send_logs_summary">Manually upload device information and Logcat to the developer log service. Logs may contain sensitive information.</string>
+    <string name="sending_logs">Sending logs. Check notifications for status.</string>
+    <string name="add_app">Add app</string>
 </resources>
