@@ -1,7 +1,3 @@
-
-
-
-
 #include "BoxCore.h"
 #include "Log.h"
 #include "IO.h"
@@ -26,7 +22,6 @@ struct {
     jmethodID loadEmptyDexL;
     int api_level;
 } VMEnv;
-
 
 JNIEnv *getEnv() {
     JNIEnv *env;
@@ -72,10 +67,22 @@ JavaVM *BoxCore::getJavaVM() {
 
 void nativeHook(JNIEnv *env) {
     BaseHook::init(env);
+
+    // Android 16 (API 36) changed ART/libcore internals used by the legacy
+    // ArtMethod based JNI hook implementation.  If the inferred native-entry
+    // offset is wrong, orig_* may become a small garbage address (for example
+    // 0x88c) and the first call through it crashes the virtual process with
+    // SIGSEGV.  Fail closed on API 36+ until the JNI hooks have an API-36
+    // specific implementation.  Keep the non-ArtMethod filesystem setup.
+    if (VMEnv.api_level >= 36) {
+        ALOGD("NativeCore: Android 16+, skipping legacy ArtMethod JNI hooks");
+        FileSystemHook::init();
+        return;
+    }
+
     UnixFileSystemHook::init(env);
     FileSystemHook::init();
     VMClassLoaderHook::init(env);
-
     BinderHook::init(env);
     DexFileHook::init(env);
 }
@@ -115,7 +122,7 @@ void enableIO(JNIEnv *env, jclass clazz) {
 
 bool disableHiddenApi(JNIEnv *env, jclass clazz) {
     ALOGD("set disableHiddenApi");
-    if(!disable_hidden_api(env)){
+    if (!disable_hidden_api(env)) {
         ALOGD("set disableHiddenApi Fail!!!");
         return false;
     }
@@ -124,7 +131,7 @@ bool disableHiddenApi(JNIEnv *env, jclass clazz) {
 
 bool disableResourceLoading(JNIEnv *env, jclass clazz) {
     ALOGD("set disableResourceLoading");
-    if(!disable_resource_loading()){
+    if (!disable_resource_loading()) {
         ALOGD("set disableResourceLoading Fail!!!");
         return false;
     }
