@@ -2,16 +2,12 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
         xmlns:app="http://schemas.android.com/apk/res-auto">
 
-
-
     <PreferenceCategory app:title="@string/other">
 
         <Preference
                 android:key="gms_manager"
                 android:title="@string/gms_manager"
                 android:summary="@string/jump_gms"/>
-
-
 
         <SwitchPreferenceCompat
                 app:key="root_hide"
@@ -33,8 +29,8 @@
 
         <Preference
                 android:key="send_logs"
-                android:title="Send Logs"
-                android:summary="Upload debug logs to developer" />
+                android:title="@string/send_logs"
+                android:summary="@string/send_logs_summary" />
 
     </PreferenceCategory>
 
