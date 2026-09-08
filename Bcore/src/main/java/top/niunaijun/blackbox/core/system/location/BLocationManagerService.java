@@ -7,10 +7,13 @@ import android.os.RemoteException;
 import android.util.AtomicFile;
 import android.util.SparseArray;
 
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +42,26 @@ public class BLocationManagerService extends IBLocationManagerService.Stub imple
     private final BLocationConfig mGlobalConfig = new BLocationConfig();
     private final Map<IBinder, LocationRecord> mLocationListeners = new HashMap<>();
     private final Executor mThreadPool = Executors.newCachedThreadPool();
+
+    /**
+     * LocationSpoofer deliberately stays outside the BlackBox LSPosed scope.  It publishes its
+     * current configuration as a small root-managed JSON file and BlackBox consumes that file as
+     * a read-only bridge.  This avoids injecting the LSPosed module into :p0 guest processes.
+     */
+    private static final String[] LOCATION_SPOOFER_CONFIG_PATHS = new String[]{
+            "/data/local/tmp/locationspoofer_config.json",
+            "/data/system/locationspoofer_config.json",
+            "/data/data/com.suseoaa.locationspoofer/files/locationspoofer_config.json"
+    };
+    private static final long LOCATION_SPOOFER_POLL_MS = 500L;
+    private final Object mLocationSpooferLock = new Object();
+    private long mLocationSpooferLastPoll;
+    private long mLocationSpooferLastModified = Long.MIN_VALUE;
+    private String mLocationSpooferLastPath;
+    private boolean mLocationSpooferConfigAvailable;
+    private boolean mLocationSpooferActive;
+    private BLocation mLocationSpooferLocation;
+    private long mLocationSpooferLastErrorLog;
 
     public static BLocationManagerService get() {
         return sService;
@@ -174,8 +197,119 @@ public class BLocationManagerService extends IBLocationManagerService.Stub imple
         }
     }
 
+    private BLocation getLocationSpooferLocationIfAvailable() {
+        refreshLocationSpooferBridge();
+        synchronized (mLocationSpooferLock) {
+            if (!mLocationSpooferConfigAvailable || !mLocationSpooferActive) {
+                return null;
+            }
+            return mLocationSpooferLocation;
+        }
+    }
+
+    private boolean isLocationSpooferConfigAvailable() {
+        refreshLocationSpooferBridge();
+        synchronized (mLocationSpooferLock) {
+            return mLocationSpooferConfigAvailable;
+        }
+    }
+
+    private void refreshLocationSpooferBridge() {
+        final long now = System.currentTimeMillis();
+        synchronized (mLocationSpooferLock) {
+            if ((now - mLocationSpooferLastPoll) < LOCATION_SPOOFER_POLL_MS) {
+                return;
+            }
+            mLocationSpooferLastPoll = now;
+
+            File readableConfig = null;
+            for (String path : LOCATION_SPOOFER_CONFIG_PATHS) {
+                File candidate = new File(path);
+                if (candidate.exists() && candidate.isFile() && candidate.canRead()) {
+                    readableConfig = candidate;
+                    break;
+                }
+            }
+
+            if (readableConfig == null) {
+                mLocationSpooferConfigAvailable = false;
+                mLocationSpooferActive = false;
+                mLocationSpooferLocation = null;
+                mLocationSpooferLastPath = null;
+                mLocationSpooferLastModified = Long.MIN_VALUE;
+                return;
+            }
+
+            final String path = readableConfig.getAbsolutePath();
+            final long modified = readableConfig.lastModified();
+            if (mLocationSpooferConfigAvailable
+                    && path.equals(mLocationSpooferLastPath)
+                    && modified == mLocationSpooferLastModified) {
+                return;
+            }
+
+            FileInputStream inputStream = null;
+            try {
+                inputStream = new FileInputStream(readableConfig);
+                byte[] bytes = FileUtils.toByteArray(inputStream);
+                JSONObject config = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+
+                final boolean active = config.optBoolean("active", false);
+                BLocation location = null;
+                if (active) {
+                    // Android Location is WGS-84.  LocationSpoofer already exports derived WGS-84
+                    // coordinates; fall back to lat/lng for compatibility with older configs.
+                    final double latitude = config.has("wgs84_lat")
+                            ? config.optDouble("wgs84_lat", Double.NaN)
+                            : config.optDouble("lat", Double.NaN);
+                    final double longitude = config.has("wgs84_lng")
+                            ? config.optDouble("wgs84_lng", Double.NaN)
+                            : config.optDouble("lng", Double.NaN);
+                    if (Double.isNaN(latitude) || Double.isInfinite(latitude)
+                            || Double.isNaN(longitude) || Double.isInfinite(longitude)
+                            || latitude < -90.0 || latitude > 90.0
+                            || longitude < -180.0 || longitude > 180.0) {
+                        throw new IllegalArgumentException("invalid LocationSpoofer coordinates");
+                    }
+                    location = new BLocation(latitude, longitude);
+                }
+
+                mLocationSpooferConfigAvailable = true;
+                mLocationSpooferActive = active;
+                mLocationSpooferLocation = location;
+                mLocationSpooferLastPath = path;
+                mLocationSpooferLastModified = modified;
+                Slog.d(TAG, "LocationSpoofer bridge: source=" + path
+                        + ", active=" + active
+                        + (location == null ? "" : ", location=" + location));
+            } catch (Throwable e) {
+                mLocationSpooferConfigAvailable = false;
+                mLocationSpooferActive = false;
+                mLocationSpooferLocation = null;
+                if ((now - mLocationSpooferLastErrorLog) > 10000L) {
+                    mLocationSpooferLastErrorLog = now;
+                    Slog.d(TAG, "LocationSpoofer bridge read failed: " + e.getClass().getSimpleName()
+                            + ": " + e.getMessage());
+                }
+            } finally {
+                CloseUtils.close(inputStream);
+            }
+        }
+    }
+
     @Override
     public BLocation getLocation(int userId, String pkg) {
+        BLocation bridged = getLocationSpooferLocationIfAvailable();
+        if (bridged != null) {
+            return bridged;
+        }
+        // If a readable LocationSpoofer config exists but spoofing is disabled, treat that as an
+        // authoritative "real location" state instead of falling through to a stale BlackBox
+        // global location saved during earlier tests.
+        if (isLocationSpooferConfigAvailable()) {
+            return null;
+        }
+
         synchronized (mGlobalConfig) {
             if (mGlobalConfig.location != null) {
                 return mGlobalConfig.location;
@@ -204,6 +338,13 @@ public class BLocationManagerService extends IBLocationManagerService.Stub imple
 
     @Override
     public BLocation getGlobalLocation() {
+        BLocation bridged = getLocationSpooferLocationIfAvailable();
+        if (bridged != null) {
+            return bridged;
+        }
+        if (isLocationSpooferConfigAvailable()) {
+            return null;
+        }
         synchronized (mGlobalConfig) {
             return mGlobalConfig.location;
         }
@@ -333,6 +474,7 @@ public class BLocationManagerService extends IBLocationManagerService.Stub imple
     @Override
     public void systemReady() {
         loadConfig();
+        refreshLocationSpooferBridge();
         for (IBinder iBinder : mLocationListeners.keySet()) {
             addTask(iBinder);
         }
