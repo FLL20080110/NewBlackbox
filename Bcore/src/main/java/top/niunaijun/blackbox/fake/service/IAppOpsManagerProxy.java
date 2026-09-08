@@ -1,5 +1,6 @@
 package top.niunaijun.blackbox.fake.service;
 
+import android.Manifest;
 import android.app.AppOpsManager;
 import android.content.Context;
 import android.os.IBinder;
@@ -10,12 +11,13 @@ import black.android.app.BRAppOpsManager;
 import black.android.os.BRServiceManager;
 import black.com.android.internal.app.BRIAppOpsServiceStub;
 import top.niunaijun.blackbox.BlackBoxCore;
+import top.niunaijun.blackbox.app.BActivityThread;
+import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager;
 import top.niunaijun.blackbox.fake.hook.BinderInvocationStub;
 import top.niunaijun.blackbox.fake.hook.MethodHook;
 import top.niunaijun.blackbox.fake.hook.ProxyMethod;
 import top.niunaijun.blackbox.utils.MethodParameterUtils;
 import top.niunaijun.blackbox.utils.Slog;
-
 
 public class IAppOpsManagerProxy extends BinderInvocationStub {
     public IAppOpsManagerProxy() {
@@ -44,35 +46,23 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         String methodName = method.getName();
-        
-        
-        
-        if (methodName.startsWith("check") || 
-            methodName.startsWith("note") || 
-            methodName.startsWith("start")) {
-            Slog.d(TAG, "AppOps invoke: Bypassing system for " + methodName + ", allowing operation");
+        if (methodName.startsWith("check") || methodName.startsWith("note") || methodName.startsWith("start")) {
+            Integer virtualMode = getVirtualMode(args);
+            if (virtualMode != null) {
+                Slog.d(TAG, "AppOps " + methodName + " -> virtual mode " + virtualMode);
+                return virtualMode;
+            }
             return AppOpsManager.MODE_ALLOWED;
         }
-        
-        
-        if (methodName.startsWith("finish")) {
-            Slog.d(TAG, "AppOps invoke: Bypassing system for " + methodName);
-            return null;
-        }
-        
-        
+        if (methodName.startsWith("finish")) return null;
+
         try {
             MethodParameterUtils.replaceFirstAppPkg(args);
             MethodParameterUtils.replaceLastUid(args);
             return super.invoke(proxy, method, args);
-        } catch (SecurityException e) {
-            
-            Slog.w(TAG, "AppOps invoke: SecurityException caught for " + methodName + ", allowing operation", e);
-            return AppOpsManager.MODE_ALLOWED;
-        } catch (Exception e) {
-            Slog.e(TAG, "AppOps invoke: Error in method " + methodName, e);
-            
-            return AppOpsManager.MODE_ALLOWED;
+        } catch (Throwable e) {
+            Slog.w(TAG, "AppOps fallback for " + methodName + ": " + e.getMessage());
+            return defaultValue(method.getReturnType());
         }
     }
 
@@ -83,170 +73,127 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
 
     @ProxyMethod("noteProxyOperation")
     public static class NoteProxyOperation extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
     @ProxyMethod("checkPackage")
     public static class CheckPackage extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return AppOpsManager.MODE_ALLOWED; }
     }
 
     @ProxyMethod("checkOperation")
     public static class CheckOperation extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            
-            Slog.d(TAG, "AppOps CheckOperation: Bypassing system check, allowing operation");
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
-    
     @ProxyMethod("checkOperationForDevice")
     public static class CheckOperationForDevice extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            Slog.d(TAG, "AppOps CheckOperationForDevice: Bypassing system check, allowing operation");
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
     @ProxyMethod("noteOperation")
     public static class NoteOperation extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            Slog.d(TAG, "AppOps NoteOperation: Bypassing system check, allowing operation");
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
     @ProxyMethod("checkOpNoThrow")
     public static class CheckOpNoThrow extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            Slog.d(TAG, "AppOps CheckOpNoThrow: Bypassing system check, allowing operation");
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
-    
     @ProxyMethod("startOp")
     public static class StartOp extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            Slog.d(TAG, "AppOps StartOp: Bypassing system check, allowing operation");
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
     @ProxyMethod("startOpNoThrow")
     public static class StartOpNoThrow extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            
-            Slog.d(TAG, "AppOps StartOpNoThrow: Bypassing system check, allowing operation");
-            return AppOpsManager.MODE_ALLOWED;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
-    
     @ProxyMethod("finishOp")
     public static class FinishOp extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            try {
-                int op = (int) args[0];
-                String name = getOpPublicName(op);
-                if (name != null && isMediaStorageOrAudioOp(name)) {
-                    Slog.d(TAG, "AppOps FinishOp: Finishing operation: " + name);
-                }
-            } catch (Throwable ignored) {
-            }
-            return null;
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return null; }
     }
 
-    
     @ProxyMethod("noteOp")
     public static class NoteOp extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            try {
-                int op = (int) args[0];
-                String name = getOpPublicName(op);
-                if (name != null && (name.contains("RECORD_AUDIO") || name.contains("AUDIO") || name.contains("MICROPHONE"))) {
-                    Slog.d(TAG, "AppOps NoteOp: Allowing RECORD_AUDIO operation: " + name);
-                    return AppOpsManager.MODE_ALLOWED;
-                }
-            } catch (Throwable ignored) {
-            }
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
-    
     @ProxyMethod("noteOpNoThrow")
     public static class NoteOpNoThrow extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            try {
-                int op = (int) args[0];
-                String name = getOpPublicName(op);
-                if (name != null && (name.contains("RECORD_AUDIO") || name.contains("AUDIO") || name.contains("MICROPHONE"))) {
-                    Slog.d(TAG, "AppOps NoteOpNoThrow: Allowing RECORD_AUDIO operation: " + name);
-                    return AppOpsManager.MODE_ALLOWED;
-                }
-            } catch (Throwable ignored) {
-            }
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) { return modeOrAllowed(args); }
     }
 
-    private static boolean isMediaStorageOrAudioOp(String opPublicNameOrStr) {
-        if (opPublicNameOrStr == null) return false;
-        
-        String n = opPublicNameOrStr.toUpperCase();
-        return n.contains("READ_MEDIA")
-                || n.contains("READ_EXTERNAL_STORAGE")
-                || n.contains("RECORD_AUDIO")
-                || n.contains("CAPTURE_AUDIO_OUTPUT")
-                || n.contains("MODIFY_AUDIO_SETTINGS")
-                || n.contains("AUDIO")
-                || n.contains("MICROPHONE")
-                || n.contains("FOREGROUND_SERVICE")
-                || n.contains("SYSTEM_ALERT_WINDOW")
-                || n.contains("WRITE_SETTINGS")
-                || n.contains("ACCESS_FINE_LOCATION")
-                || n.contains("ACCESS_COARSE_LOCATION")
-                || n.contains("CAMERA")
-                || n.contains("BODY_SENSORS")
-                || n.contains("BLUETOOTH_SCAN")
-                || n.contains("BLUETOOTH_CONNECT")
-                || n.contains("BLUETOOTH_ADVERTISE")
-                || n.contains("NEARBY_WIFI_DEVICES")
-                || n.contains("POST_NOTIFICATIONS");
+    private static int modeOrAllowed(Object[] args) {
+        Integer mode = getVirtualMode(args);
+        return mode != null ? mode : AppOpsManager.MODE_ALLOWED;
+    }
+
+    private static Integer getVirtualMode(Object[] args) {
+        String permission = permissionFromArgs(args);
+        if (permission == null) return null;
+        String pkg = BActivityThread.getAppPackageName();
+        if (pkg == null) return null;
+        boolean granted = VirtualPermissionManager.isPermissionGranted(pkg, BActivityThread.getUserId(), permission);
+        return granted ? AppOpsManager.MODE_ALLOWED : AppOpsManager.MODE_IGNORED;
+    }
+
+    private static String permissionFromArgs(Object[] args) {
+        if (args == null) return null;
+        for (Object arg : args) {
+            if (arg instanceof Integer) {
+                String opName = getOpPublicName((Integer) arg);
+                String permission = permissionForOpName(opName);
+                if (permission != null) return permission;
+            } else if (arg instanceof String) {
+                String permission = permissionForOpName((String) arg);
+                if (permission != null) return permission;
+            }
+        }
+        return null;
+    }
+
+    private static String permissionForOpName(String name) {
+        if (name == null) return null;
+        String n = name.toUpperCase();
+        if (n.contains("FINE_LOCATION")) return Manifest.permission.ACCESS_FINE_LOCATION;
+        if (n.contains("COARSE_LOCATION")) return Manifest.permission.ACCESS_COARSE_LOCATION;
+        if (n.contains("BACKGROUND_LOCATION")) return Manifest.permission.ACCESS_BACKGROUND_LOCATION;
+        if (n.contains("CAMERA")) return Manifest.permission.CAMERA;
+        if (n.contains("RECORD_AUDIO") || n.contains("MICROPHONE")) return Manifest.permission.RECORD_AUDIO;
+        if (n.contains("READ_CONTACTS")) return Manifest.permission.READ_CONTACTS;
+        if (n.contains("WRITE_CONTACTS")) return Manifest.permission.WRITE_CONTACTS;
+        if (n.contains("READ_CALENDAR")) return Manifest.permission.READ_CALENDAR;
+        if (n.contains("WRITE_CALENDAR")) return Manifest.permission.WRITE_CALENDAR;
+        if (n.contains("READ_PHONE_STATE")) return Manifest.permission.READ_PHONE_STATE;
+        if (n.contains("CALL_PHONE")) return Manifest.permission.CALL_PHONE;
+        if (n.contains("BODY_SENSORS")) return Manifest.permission.BODY_SENSORS;
+        if (n.contains("BLUETOOTH_SCAN") && android.os.Build.VERSION.SDK_INT >= 31) return Manifest.permission.BLUETOOTH_SCAN;
+        if (n.contains("BLUETOOTH_CONNECT") && android.os.Build.VERSION.SDK_INT >= 31) return Manifest.permission.BLUETOOTH_CONNECT;
+        if (n.contains("NEARBY_WIFI") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.NEARBY_WIFI_DEVICES;
+        if (n.contains("POST_NOTIFICATION") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.POST_NOTIFICATIONS;
+        return null;
     }
 
     private static String getOpPublicName(int op) {
         try {
-            
-            java.lang.reflect.Method m = AppOpsManager.class.getMethod("opToPublicName", int.class);
+            Method m = AppOpsManager.class.getMethod("opToPublicName", int.class);
             Object name = m.invoke(null, op);
             return name != null ? name.toString() : null;
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    private static Object defaultValue(Class<?> returnType) {
+        if (returnType == void.class) return null;
+        if (returnType == boolean.class) return false;
+        if (returnType == int.class) return AppOpsManager.MODE_ALLOWED;
+        if (returnType == long.class) return 0L;
+        if (returnType == float.class) return 0f;
+        if (returnType == double.class) return 0d;
+        return null;
     }
 }
