@@ -1,6 +1,7 @@
 package top.niunaijun.blackbox.fake.delegate;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Application;
 import android.app.Instrumentation;
 import android.content.Context;
@@ -30,11 +31,9 @@ import top.niunaijun.blackbox.utils.compat.ActivityManagerCompat;
 import top.niunaijun.blackbox.utils.compat.ContextCompat;
 
 public final class AppInstrumentation extends BaseInstrumentationDelegate implements IInjectHook {
-
     private static final String TAG = AppInstrumentation.class.getSimpleName();
     private static final String ACTION_REQUEST_PERMISSIONS = "android.content.pm.action.REQUEST_PERMISSIONS";
     private static final String EXTRA_REQUEST_PERMISSIONS_NAMES = "android.content.pm.extra.REQUEST_PERMISSIONS_NAMES";
-
     private static AppInstrumentation sAppInstrumentation;
 
     public static AppInstrumentation get() {
@@ -46,8 +45,7 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         return sAppInstrumentation;
     }
 
-    public AppInstrumentation() {
-    }
+    public AppInstrumentation() {}
 
     @Override
     public void injectHook() {
@@ -62,14 +60,11 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     }
 
     private Instrumentation getCurrInstrumentation() {
-        Object currentActivityThread = BlackBoxCore.mainThread();
-        return BRActivityThread.get(currentActivityThread).mInstrumentation();
+        return BRActivityThread.get(BlackBoxCore.mainThread()).mInstrumentation();
     }
 
     @Override
-    public boolean isBadEnv() {
-        return !checkInstrumentation(getCurrInstrumentation());
-    }
+    public boolean isBadEnv() { return !checkInstrumentation(getCurrInstrumentation()); }
 
     private boolean checkInstrumentation(Instrumentation instrumentation) {
         if (instrumentation instanceof AppInstrumentation) return true;
@@ -77,13 +72,11 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         if (Instrumentation.class.equals(clazz)) return false;
         do {
             assert clazz != null;
-            Field[] fields = clazz.getDeclaredFields();
-            for (Field field : fields) {
+            for (Field field : clazz.getDeclaredFields()) {
                 if (Instrumentation.class.isAssignableFrom(field.getType())) {
                     field.setAccessible(true);
                     try {
-                        Object obj = field.get(instrumentation);
-                        if (obj instanceof AppInstrumentation) return true;
+                        if (field.get(instrumentation) instanceof AppInstrumentation) return true;
                     } catch (Exception e) {
                         return false;
                     }
@@ -94,9 +87,7 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         return false;
     }
 
-    private void checkHCallback() {
-        HookManager.get().checkEnv(HCallbackProxy.class);
-    }
+    private void checkHCallback() { HookManager.get().checkEnv(HCallbackProxy.class); }
 
     private void checkActivity(Activity activity) {
         Log.d(TAG, "callActivityOnCreate: " + activity.getClass().getName());
@@ -144,11 +135,6 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         }
     }
 
-    /**
-     * Android's permission controller cannot operate on a guest-only package. Consume runtime
-     * permission requests that belong to the virtual permission system and return the container
-     * state through the same Activity callback the guest expects.
-     */
     public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
                                             Activity activity, Intent intent, int requestCode,
                                             Bundle options) throws Throwable {
@@ -157,14 +143,9 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     }
 
     private boolean handleVirtualPermissionRequest(Activity activity, Intent intent, int requestCode) {
-        if (activity == null || intent == null || !ACTION_REQUEST_PERMISSIONS.equals(intent.getAction())) {
-            return false;
-        }
-
+        if (activity == null || intent == null || !ACTION_REQUEST_PERMISSIONS.equals(intent.getAction())) return false;
         String[] permissions = intent.getStringArrayExtra(EXTRA_REQUEST_PERMISSIONS_NAMES);
         if (permissions == null || permissions.length == 0) return false;
-
-        // Consume only requests fully owned by the virtual runtime-permission subsystem.
         for (String permission : permissions) {
             if (!VirtualPermissionManager.isManagedRuntimePermission(permission)) return false;
         }
@@ -173,25 +154,75 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         final int userId = BActivityThread.getUserId();
         if (packageName == null) return false;
 
-        final int[] grantResults = new int[permissions.length];
-        for (int i = 0; i < permissions.length; i++) {
-            grantResults[i] = VirtualPermissionManager.isPermissionGranted(packageName, userId, permissions[i])
-                    ? PackageManager.PERMISSION_GRANTED : PackageManager.PERMISSION_DENIED;
+        boolean allGranted = true;
+        for (String permission : permissions) {
+            if (!VirtualPermissionManager.isPermissionGranted(packageName, userId, permission)) {
+                allGranted = false;
+                break;
+            }
         }
 
-        Log.d(TAG, "Virtual runtime permission request: pkg=" + packageName
-                + ", user=" + userId
-                + ", permissions=" + Arrays.toString(permissions)
-                + ", results=" + Arrays.toString(grantResults));
-
         final String[] callbackPermissions = permissions.clone();
+        if (allGranted) {
+            deliverPermissionResult(activity, requestCode, callbackPermissions, true);
+        } else {
+            activity.runOnUiThread(() -> showVirtualPermissionPrompt(
+                    activity, packageName, userId, requestCode, callbackPermissions));
+        }
+        return true;
+    }
+
+    private void showVirtualPermissionPrompt(Activity activity, String packageName, int userId,
+                                             int requestCode, String[] permissions) {
+        final boolean[] handled = {false};
+        StringBuilder message = new StringBuilder();
+        for (String permission : permissions) {
+            if (message.length() > 0) message.append('\n');
+            message.append("• ").append(permission.substring(permission.lastIndexOf('.') + 1));
+        }
+        try {
+            AlertDialog dialog = new AlertDialog.Builder(activity)
+                    .setTitle("权限请求")
+                    .setMessage(message.toString())
+                    .setPositiveButton("允许", (d, which) -> {
+                        handled[0] = true;
+                        boolean[] grants = new boolean[permissions.length];
+                        Arrays.fill(grants, true);
+                        VirtualPermissionManager.setPermissions(packageName, userId, permissions, grants);
+                        deliverPermissionResult(activity, requestCode, permissions, true);
+                    })
+                    .setNegativeButton("拒绝", (d, which) -> {
+                        handled[0] = true;
+                        boolean[] grants = new boolean[permissions.length];
+                        VirtualPermissionManager.setPermissions(packageName, userId, permissions, grants);
+                        deliverPermissionResult(activity, requestCode, permissions, false);
+                    }).create();
+            dialog.setOnCancelListener(d -> {
+                if (!handled[0]) {
+                    boolean[] grants = new boolean[permissions.length];
+                    VirtualPermissionManager.setPermissions(packageName, userId, permissions, grants);
+                    deliverPermissionResult(activity, requestCode, permissions, false);
+                }
+            });
+            dialog.show();
+        } catch (Throwable e) {
+            Log.e(TAG, "Unable to show virtual permission prompt", e);
+            deliverPermissionResult(activity, requestCode, permissions, false);
+        }
+    }
+
+    private void deliverPermissionResult(Activity activity, int requestCode,
+                                         String[] permissions, boolean granted) {
+        int[] results = new int[permissions.length];
+        Arrays.fill(results, granted ? PackageManager.PERMISSION_GRANTED : PackageManager.PERMISSION_DENIED);
+        Log.d(TAG, "Virtual runtime permission result: " + Arrays.toString(permissions)
+                + " => " + Arrays.toString(results));
         activity.runOnUiThread(() -> {
             try {
-                activity.onRequestPermissionsResult(requestCode, callbackPermissions, grantResults);
-            } catch (Throwable callbackError) {
-                Log.e(TAG, "Failed to deliver virtual permission result", callbackError);
+                activity.onRequestPermissionsResult(requestCode, permissions, results);
+            } catch (Throwable e) {
+                Log.e(TAG, "Failed to deliver virtual permission result", e);
             }
         });
-        return true;
     }
 }
