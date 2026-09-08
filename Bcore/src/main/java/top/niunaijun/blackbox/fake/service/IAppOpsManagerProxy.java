@@ -48,12 +48,15 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
         String methodName = method.getName();
         if (methodName.startsWith("check") || methodName.startsWith("note") || methodName.startsWith("start")) {
             Integer virtualMode = getVirtualMode(args);
-            if (virtualMode != null) {
+            if (virtualMode != null && returnsModeInt(method)) {
                 Slog.d(TAG, "AppOps " + methodName + " -> virtual mode " + virtualMode);
                 return virtualMode;
             }
-            // Unrelated operations are not virtual runtime permissions. Do not manufacture an
-            // ALLOWED result; ask the real service using the host identity instead.
+
+            // Android 12+ introduced AppOps methods whose result is a parcelable/object rather
+            // than an int mode (for example SyncNotedAppOp variants). Returning an Integer from
+            // those methods corrupts the Binder call contract and can crash callers on Android 16.
+            // Keep their exact framework return type and only virtualize classic int-mode calls.
             return invokeOriginal(method, args);
         }
         if (methodName.startsWith("finish")) {
@@ -70,6 +73,11 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
             Slog.w(TAG, "AppOps fallback for " + methodName + ": " + e.getMessage());
             return defaultValue(method.getReturnType());
         }
+    }
+
+    private static boolean returnsModeInt(Method method) {
+        Class<?> type = method.getReturnType();
+        return type == int.class || type == Integer.class;
     }
 
     private Object invokeOriginal(Method method, Object[] args) throws Throwable {
@@ -160,7 +168,6 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
 
     private static String permissionFromArgs(Object[] args) {
         if (args == null) return null;
-        // String op/public names are unambiguous, inspect them before numeric candidates.
         for (Object arg : args) {
             if (arg instanceof String) {
                 String permission = permissionForOpName((String) arg);
@@ -170,8 +177,6 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
         for (Object arg : args) {
             if (!(arg instanceof Integer)) continue;
             int candidate = (Integer) arg;
-            // Android UIDs normally start at 10000. App-op codes are small non-negative integers;
-            // this prevents a UID from being accidentally interpreted as an operation code.
             if (candidate < 0 || candidate >= 10000) continue;
             String permission = permissionForOpName(getOpPublicName(candidate));
             if (permission != null) return permission;
