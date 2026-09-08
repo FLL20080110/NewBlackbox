@@ -1,5 +1,6 @@
 package top.niunaijun.blackbox.fake.hook;
 
+import android.os.Build;
 import android.util.Log;
 
 import java.util.HashMap;
@@ -59,7 +60,6 @@ import top.niunaijun.blackbox.fake.service.GoogleAccountManagerProxy;
 import top.niunaijun.blackbox.fake.service.AuthenticationProxy;
 import top.niunaijun.blackbox.fake.service.AndroidIdProxy;
 import top.niunaijun.blackbox.fake.service.AudioPermissionProxy;
-import top.niunaijun.blackbox.fake.service.NetworkPermissionCompat;
 
 import top.niunaijun.blackbox.fake.service.INetworkManagementServiceProxy;
 import top.niunaijun.blackbox.fake.service.INotificationManagerProxy;
@@ -124,8 +124,21 @@ public class HookManager {
             addInjector(new IAudioServiceProxy());
             addInjector(new ISensorPrivacyManagerProxy());
             addInjector(new ContentResolverProxy());
-            addInjector(new SystemLibraryProxy());
-            addInjector(new ReLinkerProxy());
+
+            // These proxies touch class loading, native-library loading and APK/resource
+            // paths. On Android 16 protected apps may install their own loader very early;
+            // stacking our legacy proxy layer with that loader can corrupt initialization.
+            // Keep the core Binder/service virtualization active, but let API 36 use the
+            // platform class/library/resource path directly for this diagnostic build.
+            if (Build.VERSION.SDK_INT < 36) {
+                addInjector(new SystemLibraryProxy());
+                addInjector(new ReLinkerProxy());
+                addInjector(new ClassLoaderProxy());
+                addInjector(new FileSystemProxy());
+            } else {
+                Slog.d(TAG, "API36 compatibility mode: skipping SystemLibrary/ReLinker/ClassLoader/FileSystem proxies");
+            }
+
             addInjector(new WorkManagerProxy());
             addInjector(new MediaRecorderProxy());
             addInjector(new AudioRecordProxy());
@@ -134,8 +147,6 @@ public class HookManager {
             addInjector(new FeatureFlagUtilsProxy());
             addInjector(new MediaRecorderClassProxy());
             addInjector(new SQLiteDatabaseProxy());
-            addInjector(new ClassLoaderProxy());
-            addInjector(new FileSystemProxy());
             addInjector(new GmsProxy());
             addInjector(new LevelDbProxy());
             addInjector(new DeviceIdProxy());
@@ -154,69 +165,72 @@ public class HookManager {
             addInjector(new NetworkPermissionCompat());
             addInjector(new IConnectivityManagerProxy());
             addInjector(new IDnsResolverProxy());
-                    addInjector(new IAttributionSourceProxy());
-        addInjector(new IContentProviderProxy());
-        addInjector(new ISettingsSystemProxy());
-        addInjector(new ISystemSensorManagerProxy());
-        
-        
-        addInjector(new IXiaomiAttributionSourceProxy());
-        addInjector(new IXiaomiSettingsProxy());
-        addInjector(new IXiaomiMiuiServicesProxy());
+            addInjector(new IAttributionSourceProxy());
+            addInjector(new IContentProviderProxy());
+            addInjector(new ISettingsSystemProxy());
+            addInjector(new ISystemSensorManagerProxy());
+
+            addInjector(new IXiaomiAttributionSourceProxy());
+            addInjector(new IXiaomiSettingsProxy());
+            addInjector(new IXiaomiMiuiServicesProxy());
             addInjector(new IPhoneSubInfoProxy());
             addInjector(new IMediaRouterServiceProxy());
             addInjector(new IPowerManagerProxy());
             addInjector(new IContextHubServiceProxy());
-            
+
             addInjector(new IVibratorServiceProxy());
             addInjector(new IPersistentDataBlockServiceProxy());
             addInjector(AppInstrumentation.get());
-            
+
             addInjector(new IWifiManagerProxy());
             addInjector(new IWifiScannerProxy());
-            addInjector(new ApkAssetsProxy());
-            addInjector(new ResourcesManagerProxy());
-            
+            if (Build.VERSION.SDK_INT < 36) {
+                addInjector(new ApkAssetsProxy());
+                addInjector(new ResourcesManagerProxy());
+            } else {
+                Slog.d(TAG, "API36 compatibility mode: skipping ApkAssets/ResourcesManager proxies");
+            }
+
             if (BuildCompat.isS()) {
                 addInjector(new IActivityClientProxy(null));
                 addInjector(new IVpnManagerProxy());
             }
-            
+
             if (BuildCompat.isS()) {
                 addInjector(new ISensitiveContentProtectionManagerProxy());
             }
-            
+
             if (BuildCompat.isR()) {
                 addInjector(new IPermissionManagerProxy());
             }
-            
+
             if (BuildCompat.isQ()) {
                 addInjector(new IActivityTaskManagerProxy());
             }
-            
+
             if (BuildCompat.isPie()) {
                 addInjector(new ISystemUpdateProxy());
             }
-            
+
             if (BuildCompat.isOreo()) {
                 addInjector(new IAutofillManagerProxy());
                 addInjector(new IDeviceIdentifiersPolicyProxy());
                 addInjector(new IStorageStatsManagerProxy());
             }
-            
+
             if (BuildCompat.isN_MR1()) {
                 addInjector(new IShortcutManagerProxy());
             }
-            
+
             if (BuildCompat.isN()) {
                 addInjector(new INetworkManagementServiceProxy());
             }
-            
+
             if (BuildCompat.isM()) {
                 addInjector(new IFingerprintManagerProxy());
                 addInjector(new IGraphicsStatsProxy());
             }
-            
+
             if (BuildCompat.isL()) {
                 addInjector(new IJobServiceProxy());
             }
@@ -253,29 +267,29 @@ public class HookManager {
                 value.injectHook();
             } catch (Exception e) {
                 Slog.d(TAG, "hook error: " + value);
-                
+
                 handleHookError(value, e);
             }
         }
     }
 
-    
+
     private void handleHookError(IInjectHook hook, Exception e) {
         String hookName = hook.getClass().getSimpleName();
-        
-        
+
+
         Slog.e(TAG, "Hook failed: " + hookName + " - " + e.getMessage(), e);
-        
-        
-        if (hookName.contains("ActivityManager") || 
+
+
+        if (hookName.contains("ActivityManager") ||
             hookName.contains("PackageManager") ||
             hookName.contains("WebView") ||
             hookName.contains("ContentProvider")) {
-            
+
             Slog.w(TAG, "Critical hook failed: " + hookName + ", attempting recovery");
-            
+
             try {
-                
+
                 if (hook.isBadEnv()) {
                     Slog.d(TAG, "Attempting to recover hook: " + hookName);
                     hook.injectHook();
@@ -286,14 +300,14 @@ public class HookManager {
         }
     }
 
-    
+
     public boolean areCriticalHooksInstalled() {
         String[] criticalHooks = {
             "IActivityManagerProxy",
             "IPackageManagerProxy",
             "IContentProviderProxy"
         };
-        
+
         for (String hookName : criticalHooks) {
             boolean found = false;
             for (Class<?> hookClass : mInjectors.keySet()) {
@@ -307,21 +321,21 @@ public class HookManager {
                 return false;
             }
         }
-        
+
         Slog.d(TAG, "All critical hooks are installed");
         return true;
     }
 
-    
+
     public void reinitializeHooks() {
         Slog.d(TAG, "Reinitializing all hooks");
-        
-        
+
+
         mInjectors.clear();
-        
-        
+
+
         init();
-        
+
         Slog.d(TAG, "Hook reinitialization completed");
     }
 }
