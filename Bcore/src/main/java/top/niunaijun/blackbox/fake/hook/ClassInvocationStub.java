@@ -22,11 +22,23 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
     private boolean onlyProxy;
 
     protected abstract Object getWho();
+
     protected abstract void inject(Object baseInvocation, Object proxyInvocation);
-    protected void onBindMethod() {}
-    protected Object getProxyInvocation() { return mProxyInvocation; }
-    protected Object getBase() { return mBase; }
-    protected void onlyProxy(boolean o) { onlyProxy = o; }
+
+    protected void onBindMethod() {
+    }
+
+    protected Object getProxyInvocation() {
+        return mProxyInvocation;
+    }
+
+    protected Object getBase() {
+        return mBase;
+    }
+
+    protected void onlyProxy(boolean o) {
+        onlyProxy = o;
+    }
 
     @Override
     public void injectHook() {
@@ -35,6 +47,7 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
         mProxyInvocation = Proxy.newProxyInstance(mBase.getClass().getClassLoader(),
                 MethodParameterUtils.getAllInterface(mBase.getClass()), this);
         if (!onlyProxy) inject(mBase, mProxyInvocation);
+
         onBindMethod();
         Class<?>[] declaredClasses = this.getClass().getDeclaredClasses();
         for (Class<?> declaredClass : declaredClasses) initAnnotation(declaredClass);
@@ -51,21 +64,32 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
         if (proxyMethod != null) {
             final String name = proxyMethod.value();
             if (!TextUtils.isEmpty(name)) {
-                try { addMethodHook(name, (MethodHook) clazz.newInstance()); }
-                catch (Throwable t) { t.printStackTrace(); }
+                try {
+                    addMethodHook(name, (MethodHook) clazz.newInstance());
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                }
             }
         }
         ProxyMethods proxyMethods = clazz.getAnnotation(ProxyMethods.class);
         if (proxyMethods != null) {
             for (String name : proxyMethods.value()) {
-                try { addMethodHook(name, (MethodHook) clazz.newInstance()); }
-                catch (Throwable t) { t.printStackTrace(); }
+                try {
+                    addMethodHook(name, (MethodHook) clazz.newInstance());
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                }
             }
         }
     }
 
-    protected void addMethodHook(MethodHook methodHook) { mMethodHookMap.put(methodHook.getMethodName(), methodHook); }
-    protected void addMethodHook(String name, MethodHook methodHook) { mMethodHookMap.put(name, methodHook); }
+    protected void addMethodHook(MethodHook methodHook) {
+        mMethodHookMap.put(methodHook.getMethodName(), methodHook);
+    }
+
+    protected void addMethodHook(String name, MethodHook methodHook) {
+        mMethodHookMap.put(name, methodHook);
+    }
 
     private boolean isPermissionProxy() {
         String proxyName = getClass().getSimpleName();
@@ -77,49 +101,68 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
     private String findManagedPermission(Object[] args) {
         if (args == null) return null;
         for (Object arg : args) {
-            if (arg instanceof String && VirtualPermissionManager.isManagedRuntimePermission((String) arg)) return (String) arg;
+            if (arg instanceof String && VirtualPermissionManager.isManagedRuntimePermission((String) arg)) {
+                return (String) arg;
+            }
         }
         return null;
     }
 
+    /** Keep PackageManager, ActivityManager and PermissionManager permission checks consistent. */
     private Integer getVirtualPermissionResult(Method method, Object[] args) {
         String methodName = method.getName();
         if (!"checkPermission".equals(methodName)
                 && !"checkSelfPermission".equals(methodName)
                 && !"checkUidPermission".equals(methodName)
-                && !"checkPermissionUncached".equals(methodName)) return null;
+                && !"checkPermissionUncached".equals(methodName)) {
+            return null;
+        }
         if (!isPermissionProxy()) return null;
+
         String permission = findManagedPermission(args);
         String packageName = BActivityThread.getAppPackageName();
         if (permission == null || packageName == null) return null;
-        return VirtualPermissionManager.checkPermission(packageName, BActivityThread.getUserId(), permission);
+        return VirtualPermissionManager.checkPermission(packageName,
+                BActivityThread.getUserId(), permission);
     }
 
     private Boolean getVirtualRationaleResult(Method method, Object[] args) {
-        if (!"shouldShowRequestPermissionRationale".equals(method.getName()) || !isPermissionProxy()) return null;
+        if (!"shouldShowRequestPermissionRationale".equals(method.getName()) || !isPermissionProxy()) {
+            return null;
+        }
         String permission = findManagedPermission(args);
         String packageName = BActivityThread.getAppPackageName();
         if (permission == null || packageName == null) return null;
-        // DEFAULT: first request -> false. DENIED: explain before asking again -> true.
-        // GRANTED: no rationale is necessary.
-        return VirtualPermissionManager.getPermissionState(packageName, BActivityThread.getUserId(), permission)
-                == VirtualPermissionManager.STATE_DENIED;
+        int state = VirtualPermissionManager.getPermissionState(packageName,
+                BActivityThread.getUserId(), permission);
+        // Retryable denial mirrors Android's rationale=true. First request, granted and
+        // permanently-denied states return false.
+        return state == VirtualPermissionManager.STATE_DENIED;
     }
 
+    /** Mirror virtual grants into PackageInfo for SDKs that inspect requestedPermissionsFlags. */
     private Object applyVirtualPermissionFlags(Object result) {
         if (!(result instanceof PackageInfo)) return result;
         PackageInfo packageInfo = (PackageInfo) result;
-        if (packageInfo.requestedPermissions == null || packageInfo.requestedPermissionsFlags == null) return result;
+        if (packageInfo.requestedPermissions == null || packageInfo.requestedPermissionsFlags == null) {
+            return result;
+        }
+
         String packageName = packageInfo.packageName;
         if (packageName == null || packageName.length() == 0) packageName = BActivityThread.getAppPackageName();
         if (packageName == null) return result;
-        int count = Math.min(packageInfo.requestedPermissions.length, packageInfo.requestedPermissionsFlags.length);
+
+        int count = Math.min(packageInfo.requestedPermissions.length,
+                packageInfo.requestedPermissionsFlags.length);
         for (int i = 0; i < count; i++) {
             String permission = packageInfo.requestedPermissions[i];
             if (!VirtualPermissionManager.isManagedRuntimePermission(permission)) continue;
-            if (VirtualPermissionManager.isPermissionGranted(packageName, BActivityThread.getUserId(), permission))
+            if (VirtualPermissionManager.isPermissionGranted(packageName,
+                    BActivityThread.getUserId(), permission)) {
                 packageInfo.requestedPermissionsFlags[i] |= PackageInfo.REQUESTED_PERMISSION_GRANTED;
-            else packageInfo.requestedPermissionsFlags[i] &= ~PackageInfo.REQUESTED_PERMISSION_GRANTED;
+            } else {
+                packageInfo.requestedPermissionsFlags[i] &= ~PackageInfo.REQUESTED_PERMISSION_GRANTED;
+            }
         }
         return packageInfo;
     }
@@ -128,13 +171,19 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         Integer virtualPermissionResult = getVirtualPermissionResult(method, args);
         if (virtualPermissionResult != null) return virtualPermissionResult;
+
         Boolean rationaleResult = getVirtualRationaleResult(method, args);
         if (rationaleResult != null) return rationaleResult;
+
         MethodHook methodHook = mMethodHookMap.get(method.getName());
         if (methodHook == null || !methodHook.isEnable()) {
-            try { return applyVirtualPermissionFlags(method.invoke(mBase, args)); }
-            catch (Throwable e) { throw e.getCause(); }
+            try {
+                return applyVirtualPermissionFlags(method.invoke(mBase, args));
+            } catch (Throwable e) {
+                throw e.getCause();
+            }
         }
+
         Object result = methodHook.beforeHook(mBase, method, args);
         if (result != null) return applyVirtualPermissionFlags(result);
         result = methodHook.hook(mBase, method, args);
