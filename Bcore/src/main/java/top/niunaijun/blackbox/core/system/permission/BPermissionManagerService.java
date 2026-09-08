@@ -29,11 +29,13 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
     private static final int STATE_DEFAULT = 0;
     private static final int STATE_GRANTED = 1;
     private static final int STATE_DENIED = 2;
+    private static final int STATE_DENIED_FIXED = 3;
     private static final BPermissionManagerService sService = new BPermissionManagerService();
 
     private final Object mLock = new Object();
     private final Map<Integer, Map<String, Set<String>>> mGranted = new HashMap<>();
     private final Map<Integer, Map<String, Set<String>>> mDenied = new HashMap<>();
+    private final Map<Integer, Map<String, Set<String>>> mDeniedFixed = new HashMap<>();
     private AtomicFile mStateFile;
     private boolean mLoaded;
 
@@ -61,11 +63,12 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
         if (packageName == null || permission == null) return STATE_DEFAULT;
         if (VirtualPermissionManager.isManagedRuntimePermission(permission)
                 && !isPermissionDeclared(packageName, userId, permission)) {
-            return STATE_DENIED;
+            return STATE_DENIED_FIXED;
         }
         synchronized (mLock) {
             ensureLoadedLocked();
             if (containsLocked(mGranted, packageName, userId, permission)) return STATE_GRANTED;
+            if (containsLocked(mDeniedFixed, packageName, userId, permission)) return STATE_DENIED_FIXED;
             if (containsLocked(mDenied, packageName, userId, permission)) return STATE_DENIED;
             return STATE_DEFAULT;
         }
@@ -79,12 +82,13 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
     @Override
     public void setPermissionState(String packageName, int userId, String permission, int state) {
         if (packageName == null || permission == null) return;
+        if (state < STATE_DEFAULT || state > STATE_DENIED_FIXED) state = STATE_DEFAULT;
         synchronized (mLock) {
             ensureLoadedLocked();
             if (state == STATE_GRANTED && VirtualPermissionManager.isManagedRuntimePermission(permission)
                     && !isPermissionDeclared(packageName, userId, permission)) {
                 Slog.w(TAG, "Rejecting undeclared virtual permission " + permission + " for " + packageName);
-                state = STATE_DENIED;
+                state = STATE_DENIED_FIXED;
             }
             setPermissionStateLocked(packageName, userId, permission, state);
             normalizeLocationLocked(packageName, userId);
@@ -104,7 +108,7 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
                 int state = grants[i] ? STATE_GRANTED : STATE_DENIED;
                 if (state == STATE_GRANTED && VirtualPermissionManager.isManagedRuntimePermission(permission)
                         && !isPermissionDeclared(packageName, userId, permission)) {
-                    state = STATE_DENIED;
+                    state = STATE_DENIED_FIXED;
                 }
                 setPermissionStateLocked(packageName, userId, permission, state);
             }
@@ -136,6 +140,7 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             ensureLoadedLocked();
             removePackageLocked(mGranted, packageName, userId);
             removePackageLocked(mDenied, packageName, userId);
+            removePackageLocked(mDeniedFixed, packageName, userId);
             saveLocked();
         }
     }
@@ -143,8 +148,10 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
     private void setPermissionStateLocked(String packageName, int userId, String permission, int state) {
         removePermissionLocked(mGranted, packageName, userId, permission);
         removePermissionLocked(mDenied, packageName, userId, permission);
+        removePermissionLocked(mDeniedFixed, packageName, userId, permission);
         if (state == STATE_GRANTED) getSetLocked(mGranted, packageName, userId, true).add(permission);
         else if (state == STATE_DENIED) getSetLocked(mDenied, packageName, userId, true).add(permission);
+        else if (state == STATE_DENIED_FIXED) getSetLocked(mDeniedFixed, packageName, userId, true).add(permission);
     }
 
     private boolean containsLocked(Map<Integer, Map<String, Set<String>>> store,
@@ -249,6 +256,7 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
                     loadPermissionArrayLocked(mGranted, name, userId, pkg.optJSONArray("permissions"));
                     loadPermissionArrayLocked(mGranted, name, userId, pkg.optJSONArray("granted"));
                     loadPermissionArrayLocked(mDenied, name, userId, pkg.optJSONArray("denied"));
+                    loadPermissionArrayLocked(mDeniedFixed, name, userId, pkg.optJSONArray("deniedFixed"));
                 }
             }
         } catch (Throwable e) {
@@ -277,6 +285,7 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             Set<Integer> userIds = new HashSet<>();
             userIds.addAll(mGranted.keySet());
             userIds.addAll(mDenied.keySet());
+            userIds.addAll(mDeniedFixed.keySet());
             for (Integer userId : userIds) {
                 JSONObject user = new JSONObject();
                 user.put("id", userId);
@@ -284,19 +293,22 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
                 Set<String> packageNames = new HashSet<>();
                 Map<String, Set<String>> grantedPackages = mGranted.get(userId);
                 Map<String, Set<String>> deniedPackages = mDenied.get(userId);
+                Map<String, Set<String>> fixedPackages = mDeniedFixed.get(userId);
                 if (grantedPackages != null) packageNames.addAll(grantedPackages.keySet());
                 if (deniedPackages != null) packageNames.addAll(deniedPackages.keySet());
+                if (fixedPackages != null) packageNames.addAll(fixedPackages.keySet());
                 for (String packageName : packageNames) {
                     JSONObject pkg = new JSONObject();
                     pkg.put("name", packageName);
                     pkg.put("granted", toJsonArray(grantedPackages == null ? null : grantedPackages.get(packageName)));
                     pkg.put("denied", toJsonArray(deniedPackages == null ? null : deniedPackages.get(packageName)));
+                    pkg.put("deniedFixed", toJsonArray(fixedPackages == null ? null : fixedPackages.get(packageName)));
                     packages.put(pkg);
                 }
                 user.put("packages", packages);
                 users.put(user);
             }
-            root.put("version", 2);
+            root.put("version", 3);
             root.put("users", users);
             byte[] bytes = root.toString().getBytes(StandardCharsets.UTF_8);
             out = mStateFile.startWrite();
