@@ -60,36 +60,24 @@ public class BProcessManagerService implements ISystemService {
 
             if (bpid == -1) {
                 app = bProcess.get(processName);
+                if (isRecordAlive(app)) {
+                    return app;
+                }
                 if (app != null) {
-                    boolean alive = false;
-                    try {
-                        alive = app.bActivityThread != null
-                                && app.bActivityThread.asBinder() != null
-                                && app.bActivityThread.asBinder().isBinderAlive();
-                    } catch (Throwable ignored) {
-                    }
-                    if (alive) {
-                        return app;
-                    }
-
-                    // Mature virtual containers replace dead/stale process records instead of
-                    // waiting forever on an initialization latch. A stale record here used to be
-                    // able to freeze every later launch of the same virtual process.
                     Slog.w(TAG, "Discarding stale process slot: " + processName + " bPid=" + app.bpid);
-                    try {
-                        app.kill();
-                    } catch (Throwable ignored) {
-                    }
-                    bProcess.remove(processName);
-                    mPidsSelfLocked.remove(app);
-                    removeProc(app);
+                    removeRecordLocked(app, true);
                 }
 
                 bpid = getUsingBPidL();
                 Slog.d(TAG, "init bUid = " + buid + ", bPid = " + bpid);
             }
             if (bpid == -1) {
-                throw new RuntimeException("No processes available");
+                // VirtualApp-style process managers fail the single launch when no stub is
+                // available. Crashing the host process here turns resource pressure into a full
+                // virtual-space crash and leaves even more stale records behind.
+                Slog.e(TAG, "No virtual process slot available for " + packageName + "/" + processName);
+                if (bProcess.isEmpty()) mProcessMap.remove(buid);
+                return null;
             }
 
             app = new ProcessRecord(info, processName);
@@ -103,12 +91,7 @@ public class BProcessManagerService implements ISystemService {
             mPidsSelfLocked.add(app);
 
             if (!initAppProcessL(app)) {
-                bProcess.remove(processName);
-                mPidsSelfLocked.remove(app);
-                removeProc(app);
-                if (bProcess.isEmpty()) {
-                    mProcessMap.remove(buid);
-                }
+                removeRecordLocked(app, true);
                 app = null;
             } else {
                 app.pid = getPid(BlackBoxCore.getContext(), ProxyManifest.getProcessName(app.bpid));
@@ -120,23 +103,78 @@ public class BProcessManagerService implements ISystemService {
         return app;
     }
 
+    /**
+     * Select a free stub from live container records rather than trusting ActivityManager alone.
+     * OEM Android versions may keep a dead :pN process visible briefly; treating that stale OS
+     * entry as permanently occupied eventually exhausts all virtual slots.
+     */
     private int getUsingBPidL() {
-        ActivityManager manager = (ActivityManager) BlackBoxCore.getContext().getSystemService(Context.ACTIVITY_SERVICE);
-        List<ActivityManager.RunningAppProcessInfo> runningAppProcesses = manager.getRunningAppProcesses();
-        Set<Integer> usingPs = new HashSet<>();
-        if (runningAppProcesses != null) {
-            for (ActivityManager.RunningAppProcessInfo runningAppProcess : runningAppProcesses) {
-                int i = parseBPid(runningAppProcess.processName);
-                if (i >= 0) usingPs.add(i);
+        Set<Integer> using = new HashSet<>();
+        List<ProcessRecord> snapshot = new ArrayList<>(mPidsSelfLocked);
+        for (ProcessRecord record : snapshot) {
+            if (isRecordAlive(record)) {
+                if (record.bpid >= 0) using.add(record.bpid);
+            } else {
+                Slog.w(TAG, "Reclaiming dead virtual slot bPid=" + record.bpid + " process=" + record.processName);
+                removeRecordLocked(record, true);
             }
         }
+
         for (int i = 0; i < ProxyManifest.FREE_COUNT; i++) {
-            if (usingPs.contains(i)) {
-                continue;
+            if (using.contains(i)) continue;
+
+            // If Android still exposes an untracked stub process, terminate it before assigning
+            // the same provider/process slot to a new guest. This prevents old BActivityThread
+            // state from being reused for another package.
+            int stalePid = getPid(BlackBoxCore.getContext(), ProxyManifest.getProcessName(i));
+            if (stalePid > 0) {
+                boolean tracked = false;
+                for (ProcessRecord record : mPidsSelfLocked) {
+                    if (record.bpid == i && record.pid == stalePid && isRecordAlive(record)) {
+                        tracked = true;
+                        break;
+                    }
+                }
+                if (!tracked) {
+                    Slog.w(TAG, "Killing untracked stale stub process " + stalePid + " for bPid=" + i);
+                    try {
+                        Process.killProcess(stalePid);
+                    } catch (Throwable e) {
+                        Slog.w(TAG, "Unable to kill stale stub " + stalePid + ": " + e.getMessage());
+                        continue;
+                    }
+                }
             }
             return i;
         }
         return -1;
+    }
+
+    private boolean isRecordAlive(ProcessRecord record) {
+        if (record == null) return false;
+        try {
+            return record.bActivityThread != null
+                    && record.bActivityThread.asBinder() != null
+                    && record.bActivityThread.asBinder().isBinderAlive();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void removeRecordLocked(ProcessRecord record, boolean kill) {
+        if (record == null) return;
+        if (kill) {
+            try { record.kill(); } catch (Throwable ignored) {}
+        }
+        mPidsSelfLocked.remove(record);
+        int appId = BPackageManagerService.get().getAppId(record.getPackageName());
+        int key = BUserHandle.getUid(record.userId, appId);
+        Map<String, ProcessRecord> process = mProcessMap.get(key);
+        if (process != null && process.get(record.processName) == record) {
+            process.remove(record.processName);
+            if (process.isEmpty()) mProcessMap.remove(key);
+        }
+        removeProc(record);
     }
 
     public void restartAppProcess(String packageName, String processName, int userId) {
@@ -144,7 +182,13 @@ public class BProcessManagerService implements ISystemService {
             int callingPid = Binder.getCallingPid();
             ProcessRecord app = findProcessByPid(callingPid);
             if (app == null) {
-                String stubProcessName = getProcessName(BlackBoxCore.getContext(), callingPid);
+                String stubProcessName;
+                try {
+                    stubProcessName = getProcessName(BlackBoxCore.getContext(), callingPid);
+                } catch (Throwable e) {
+                    Slog.w(TAG, "Unable to resolve caller process during restart: " + e.getMessage());
+                    return;
+                }
                 int bpid = parseBPid(stubProcessName);
                 startProcessLocked(packageName, processName, userId, bpid, callingPid);
             }
@@ -152,12 +196,8 @@ public class BProcessManagerService implements ISystemService {
     }
 
     private int parseBPid(String stubProcessName) {
-        String prefix;
-        if (stubProcessName == null) {
-            return -1;
-        } else {
-            prefix = BlackBoxCore.getHostPkg() + ":p";
-        }
+        if (stubProcessName == null) return -1;
+        String prefix = BlackBoxCore.getHostPkg() + ":p";
         if (stubProcessName.startsWith(prefix)) {
             try {
                 return Integer.parseInt(stubProcessName.substring(prefix.length()));
@@ -184,9 +224,7 @@ public class BProcessManagerService implements ISystemService {
                 return false;
             }
             attachClientL(record, appThread);
-            if (record.bActivityThread == null) {
-                return false;
-            }
+            if (record.bActivityThread == null) return false;
             createProc(record);
             return true;
         } catch (Throwable e) {
@@ -206,10 +244,7 @@ public class BProcessManagerService implements ISystemService {
                 @Override
                 public void binderDied() {
                     Log.d(TAG, "App Died: " + app.processName);
-                    try {
-                        appThread.unlinkToDeath(this, 0);
-                    } catch (Throwable ignored) {
-                    }
+                    try { appThread.unlinkToDeath(this, 0); } catch (Throwable ignored) {}
                     onProcessDie(app);
                 }
             }, 0);
@@ -227,24 +262,10 @@ public class BProcessManagerService implements ISystemService {
 
     public void onProcessDie(ProcessRecord record) {
         synchronized (mProcessLock) {
+            removeRecordLocked(record, true);
             try {
-                record.kill();
-            } catch (Throwable ignored) {
-            }
-            int key = BUserHandle.getUid(record.userId, BPackageManagerService.get().getAppId(record.getPackageName()));
-            Map<String, ProcessRecord> process = mProcessMap.get(key);
-            if (process != null) {
-                ProcessRecord current = process.get(record.processName);
-                if (current == record) {
-                    process.remove(record.processName);
-                    if (process.isEmpty()) {
-                        mProcessMap.remove(key);
-                    }
-                }
-            }
-            mPidsSelfLocked.remove(record);
-            removeProc(record);
-            BNotificationManagerService.get().deletePackageNotification(record.getPackageName(), record.userId);
+                BNotificationManagerService.get().deletePackageNotification(record.getPackageName(), record.userId);
+            } catch (Throwable ignored) {}
         }
     }
 
@@ -253,32 +274,22 @@ public class BProcessManagerService implements ISystemService {
             int appId = BPackageManagerService.get().getAppId(packageName);
             int buid = BUserHandle.getUid(userId, appId);
             Map<String, ProcessRecord> processRecordMap = mProcessMap.get(buid);
-            if (processRecordMap == null)
+            if (processRecordMap == null) return null;
+            ProcessRecord record = processRecordMap.get(processName);
+            if (record != null && !isRecordAlive(record)) {
+                removeRecordLocked(record, true);
                 return null;
-            return processRecordMap.get(processName);
+            }
+            return record;
         }
     }
 
     public void killAllByPackageName(String packageName) {
         synchronized (mProcessLock) {
-            List<ProcessRecord> tmp = new ArrayList<>(mPidsSelfLocked);
+            List<ProcessRecord> snapshot = new ArrayList<>(mPidsSelfLocked);
             int appId = BPackageManagerService.get().getAppId(packageName);
-            for (ProcessRecord processRecord : tmp) {
-                int processAppId = BUserHandle.getAppId(processRecord.buid);
-                if (appId == processAppId) {
-                    try {
-                        processRecord.kill();
-                    } catch (Throwable ignored) {
-                    }
-                    mPidsSelfLocked.remove(processRecord);
-                    removeProc(processRecord);
-                    int key = BUserHandle.getUid(processRecord.userId, appId);
-                    Map<String, ProcessRecord> map = mProcessMap.get(key);
-                    if (map != null) {
-                        map.remove(processRecord.processName);
-                        if (map.isEmpty()) mProcessMap.remove(key);
-                    }
-                }
+            for (ProcessRecord record : snapshot) {
+                if (appId == BUserHandle.getAppId(record.buid)) removeRecordLocked(record, true);
             }
         }
     }
@@ -286,17 +297,9 @@ public class BProcessManagerService implements ISystemService {
     public void killPackageAsUser(String packageName, int userId) {
         synchronized (mProcessLock) {
             int buid = BUserHandle.getUid(userId, BPackageManagerService.get().getAppId(packageName));
-            Map<String, ProcessRecord> process = mProcessMap.remove(buid);
-            if (process == null)
-                return;
-            for (ProcessRecord value : new ArrayList<>(process.values())) {
-                try {
-                    value.kill();
-                } catch (Throwable ignored) {
-                }
-                mPidsSelfLocked.remove(value);
-                removeProc(value);
-            }
+            Map<String, ProcessRecord> process = mProcessMap.get(buid);
+            if (process == null) return;
+            for (ProcessRecord value : new ArrayList<>(process.values())) removeRecordLocked(value, true);
         }
     }
 
@@ -304,65 +307,58 @@ public class BProcessManagerService implements ISystemService {
         synchronized (mProcessLock) {
             int buid = BUserHandle.getUid(userId, BPackageManagerService.get().getAppId(packageName));
             Map<String, ProcessRecord> process = mProcessMap.get(buid);
-            if (process == null)
-                return new ArrayList<>();
-            return new ArrayList<>(process.values());
+            if (process == null) return new ArrayList<>();
+            List<ProcessRecord> result = new ArrayList<>();
+            for (ProcessRecord record : new ArrayList<>(process.values())) {
+                if (isRecordAlive(record)) result.add(record);
+                else removeRecordLocked(record, true);
+            }
+            return result;
         }
     }
 
     public int getBUidByPidOrPackageName(int pid, String packageName) {
         ProcessRecord callingProcess = findProcessByPid(pid);
-        if (callingProcess == null) {
-            return BPackageManagerService.get().getAppId(packageName);
-        }
+        if (callingProcess == null) return BPackageManagerService.get().getAppId(packageName);
         return BUserHandle.getAppId(callingProcess.buid);
     }
 
     public int getUserIdByCallingPid(int callingPid) {
         ProcessRecord callingProcess = findProcessByPid(callingPid);
-        if (callingProcess == null) {
-            return 0;
-        }
-        return callingProcess.userId;
+        return callingProcess == null ? 0 : callingProcess.userId;
     }
 
     public ProcessRecord findProcessByPid(int pid) {
         synchronized (mProcessLock) {
-            for (ProcessRecord processRecord : mPidsSelfLocked) {
-                if (processRecord.pid == pid)
-                    return processRecord;
+            for (ProcessRecord record : new ArrayList<>(mPidsSelfLocked)) {
+                if (!isRecordAlive(record)) {
+                    removeRecordLocked(record, true);
+                    continue;
+                }
+                if (record.pid == pid) return record;
             }
             return null;
         }
     }
 
     private static String getProcessName(Context context, int pid) {
-        String processName = null;
         ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         List<ActivityManager.RunningAppProcessInfo> running = am.getRunningAppProcesses();
         if (running != null) {
             for (ActivityManager.RunningAppProcessInfo info : running) {
-                if (info.pid == pid) {
-                    processName = info.processName;
-                    break;
-                }
+                if (info.pid == pid) return info.processName;
             }
         }
-        if (processName == null) {
-            throw new RuntimeException("processName = null");
-        }
-        return processName;
+        throw new RuntimeException("processName = null");
     }
 
     public static int getPid(Context context, String processName) {
         try {
             ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-            List<ActivityManager.RunningAppProcessInfo> runningAppProcesses = manager.getRunningAppProcesses();
-            if (runningAppProcesses != null) {
-                for (ActivityManager.RunningAppProcessInfo runningAppProcess : runningAppProcesses) {
-                    if (runningAppProcess.processName.equals(processName)) {
-                        return runningAppProcess.pid;
-                    }
+            List<ActivityManager.RunningAppProcessInfo> running = manager.getRunningAppProcesses();
+            if (running != null) {
+                for (ActivityManager.RunningAppProcessInfo info : running) {
+                    if (processName.equals(info.processName)) return info.pid;
                 }
             }
         } catch (Throwable e) {
