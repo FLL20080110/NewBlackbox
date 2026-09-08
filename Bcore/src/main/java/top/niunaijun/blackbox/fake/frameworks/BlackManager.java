@@ -2,9 +2,11 @@ package top.niunaijun.blackbox.fake.frameworks;
 
 import android.os.IBinder;
 import android.os.IInterface;
+import android.os.Looper;
 import android.util.Log;
 
 import java.lang.reflect.ParameterizedType;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.utils.Reflector;
@@ -14,8 +16,10 @@ public abstract class BlackManager<Service extends IInterface> {
     public static final String TAG = "BlackManager";
 
     private final Object mServiceLock = new Object();
+    private final AtomicBoolean mRefreshInFlight = new AtomicBoolean(false);
     private volatile Service mService;
     private volatile long mLastFailureTime;
+    private volatile boolean mEverConnected;
     private static final long FAILURE_BACKOFF_MS = 150;
 
     protected abstract String getServiceName();
@@ -24,6 +28,24 @@ public abstract class BlackManager<Service extends IInterface> {
         Service cached = mService;
         if (isAlive(cached)) return cached;
         if (cached != null) clearIfSame(cached);
+
+        /*
+         * Initial service bootstrap is still allowed to be synchronous because many callers need
+         * a service immediately during BlackBox startup. After a service has connected once,
+         * however, a dead core process must not make an Activity/UI thread enter
+         * BlackBoxCore.getService(), whose provider/process recovery can block on OEM Android.
+         * Fail this single call quickly and refresh the binder in a background thread instead.
+         */
+        if (mEverConnected && Looper.myLooper() == Looper.getMainLooper()) {
+            scheduleAsyncRefresh();
+            return null;
+        }
+        return getServiceBlocking();
+    }
+
+    private Service getServiceBlocking() {
+        Service cached = mService;
+        if (isAlive(cached)) return cached;
 
         synchronized (mServiceLock) {
             cached = mService;
@@ -53,6 +75,7 @@ public abstract class BlackManager<Service extends IInterface> {
                 try {
                     serviceRef.asBinder().linkToDeath(() -> {
                         clearIfSame(serviceRef);
+                        scheduleAsyncRefresh();
                         Log.w(TAG, "Service died: " + getServiceName());
                     }, 0);
                 } catch (Throwable e) {
@@ -62,6 +85,7 @@ public abstract class BlackManager<Service extends IInterface> {
                 }
 
                 mService = created;
+                mEverConnected = true;
                 mLastFailureTime = 0;
                 return created;
             } catch (Throwable e) {
@@ -69,6 +93,26 @@ public abstract class BlackManager<Service extends IInterface> {
                 return null;
             }
         }
+    }
+
+    private void scheduleAsyncRefresh() {
+        if (!mRefreshInFlight.compareAndSet(false, true)) return;
+        Thread worker = new Thread(() -> {
+            try {
+                Service service = getServiceBlocking();
+                if (service == null) {
+                    Log.w(TAG, "Async service refresh did not reconnect: " + getServiceName());
+                } else {
+                    Log.d(TAG, "Async service refresh connected: " + getServiceName());
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "Async service refresh failed: " + getServiceName(), e);
+            } finally {
+                mRefreshInFlight.set(false);
+            }
+        }, "BlackBox-ServiceRefresh-" + getServiceName());
+        worker.setDaemon(true);
+        worker.start();
     }
 
     private boolean isAlive(Service service) {
@@ -99,6 +143,7 @@ public abstract class BlackManager<Service extends IInterface> {
             mService = null;
             mLastFailureTime = 0;
         }
+        if (mEverConnected) scheduleAsyncRefresh();
         Log.d(TAG, "Cleared service cache for " + getServiceName());
     }
 
