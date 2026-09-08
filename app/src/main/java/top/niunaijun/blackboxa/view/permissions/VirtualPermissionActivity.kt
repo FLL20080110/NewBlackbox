@@ -30,11 +30,13 @@ class VirtualPermissionActivity : AppCompatActivity() {
     }
 
     private var closing = false
+    @Volatile private var busy = false
     private var packageName: String = ""
     private var userId: Int = 0
     private var permissions: Array<String> = emptyArray()
     private lateinit var checked: BooleanArray
     private val boxes = linkedMapOf<Int, CheckBox>()
+    private val actionButtons = mutableListOf<Button>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -121,7 +123,7 @@ class VirtualPermissionActivity : AppCompatActivity() {
                     isChecked = index in checked.indices && checked[index]
                     setPadding(0, dp(3), 0, dp(3))
                     setOnCheckedChangeListener { _, value ->
-                        if (index in checked.indices) checked[index] = value
+                        if (!busy && index in checked.indices) checked[index] = value
                     }
                 }
                 boxes[index] = box
@@ -140,12 +142,15 @@ class VirtualPermissionActivity : AppCompatActivity() {
         }
         val cancel = Button(this).apply {
             text = getString(R.string.cancel)
-            setOnClickListener { safeFinish() }
+            setOnClickListener { if (!busy) safeFinish() }
         }
         val save = Button(this).apply {
             text = getString(R.string.done)
             setOnClickListener { saveAndFinish() }
         }
+        actionButtons += reset
+        actionButtons += cancel
+        actionButtons += save
         buttons.addView(reset)
         buttons.addView(cancel)
         buttons.addView(save)
@@ -161,40 +166,78 @@ class VirtualPermissionActivity : AppCompatActivity() {
         setContentView(scroll)
     }
 
+    private fun setBusy(value: Boolean) {
+        busy = value
+        actionButtons.forEach { it.isEnabled = !value }
+        boxes.values.forEach { it.isEnabled = !value }
+    }
+
     private fun resetToDefault() {
-        try {
-            permissions.forEachIndexed { index, permission ->
-                VirtualPermissionManager.setPermissionState(
-                    packageName, userId, permission, VirtualPermissionManager.STATE_DEFAULT
-                )
-                if (index in checked.indices) checked[index] = false
-                boxes[index]?.isChecked = false
+        if (busy) return
+        setBusy(true)
+        val permissionSnapshot = permissions.clone()
+        Thread({
+            var error: Throwable? = null
+            try {
+                permissionSnapshot.forEach { permission ->
+                    VirtualPermissionManager.setPermissionState(
+                        packageName, userId, permission, VirtualPermissionManager.STATE_DEFAULT
+                    )
+                }
+            } catch (t: Throwable) {
+                error = t
+                Log.e(TAG, "Failed to reset virtual permissions", t)
             }
-            Toast.makeText(this, "已恢复默认权限状态", Toast.LENGTH_SHORT).show()
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to reset virtual permissions", t)
-            Toast.makeText(this, "恢复默认失败", Toast.LENGTH_SHORT).show()
-        }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                setBusy(false)
+                if (error == null) {
+                    checked.fill(false)
+                    boxes.values.forEach { it.isChecked = false }
+                    Toast.makeText(this, "已恢复默认权限状态", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "恢复默认失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }, "VirtualPermissionReset").start()
     }
 
     private fun saveAndFinish() {
-        try {
-            VirtualPermissionUi.save(packageName, userId, permissions, checked)
+        if (busy) return
+        setBusy(true)
+        val permissionSnapshot = permissions.clone()
+        val checkedSnapshot = checked.clone()
+        val targetPackage = packageName
+        val targetUser = userId
+        Thread({
+            var success = true
             try {
-                BlackBoxCore.get().stopPackage(packageName, userId)
+                VirtualPermissionUi.save(targetPackage, targetUser, permissionSnapshot, checkedSnapshot)
+                try {
+                    BlackBoxCore.get().stopPackage(targetPackage, targetUser)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Unable to stop guest after permission update", t)
+                }
             } catch (t: Throwable) {
-                Log.w(TAG, "Unable to stop guest after permission update", t)
+                success = false
+                Log.e(TAG, "Failed to persist virtual permissions", t)
             }
-            Toast.makeText(this, R.string.virtual_permissions_saved, Toast.LENGTH_SHORT).show()
-            safeFinish()
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to persist virtual permissions", t)
-            Toast.makeText(this, "权限保存失败", Toast.LENGTH_SHORT).show()
-        }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                setBusy(false)
+                if (success) {
+                    Toast.makeText(this, R.string.virtual_permissions_saved, Toast.LENGTH_SHORT).show()
+                    safeFinish()
+                } else {
+                    Toast.makeText(this, "权限保存失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }, "VirtualPermissionSave").start()
     }
 
     override fun onDestroy() {
         boxes.clear()
+        actionButtons.clear()
         super.onDestroy()
     }
 
