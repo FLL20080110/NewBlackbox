@@ -35,6 +35,7 @@ import top.niunaijun.blackbox.utils.provider.ProviderCall;
 
 public class BProcessManagerService implements ISystemService {
     public static final String TAG = "BProcessManager";
+    private static final long INIT_WAIT_TIMEOUT_MS = 3000L;
 
     public static BProcessManagerService sBProcessManagerService = new BProcessManagerService();
     private final Map<Integer, Map<String, ProcessRecord>> mProcessMap = new HashMap<>();
@@ -47,10 +48,12 @@ public class BProcessManagerService implements ISystemService {
 
     public ProcessRecord startProcessLocked(String packageName, String processName, int userId, int bpid, int callingPid) {
         ApplicationInfo info = BPackageManagerService.get().getApplicationInfo(packageName, 0, userId);
-        if (info == null)
-            return null;
-        ProcessRecord app;
+        if (info == null) return null;
+
         int buid = BUserHandle.getUid(userId, BPackageManagerService.get().getAppId(packageName));
+        ProcessRecord app = null;
+        ProcessRecord pending = null;
+
         synchronized (mProcessLock) {
             Map<String, ProcessRecord> bProcess = mProcessMap.get(buid);
             if (bProcess == null) {
@@ -59,48 +62,76 @@ public class BProcessManagerService implements ISystemService {
             }
 
             if (bpid == -1) {
-                app = bProcess.get(processName);
-                if (isRecordAlive(app)) {
-                    return app;
+                ProcessRecord existing = bProcess.get(processName);
+                if (isRecordAlive(existing)) return existing;
+
+                if (existing != null && existing.initializing) {
+                    pending = existing;
+                } else {
+                    if (existing != null) {
+                        Slog.w(TAG, "Discarding stale process slot: " + processName + " bPid=" + existing.bpid);
+                        removeRecordLocked(existing, true);
+                    }
+                    bpid = getUsingBPidL();
+                    Slog.d(TAG, "init bUid = " + buid + ", bPid = " + bpid);
                 }
-                if (app != null) {
-                    Slog.w(TAG, "Discarding stale process slot: " + processName + " bPid=" + app.bpid);
-                    removeRecordLocked(app, true);
+            }
+
+            if (pending == null) {
+                if (bpid == -1) {
+                    Slog.e(TAG, "No virtual process slot available for " + packageName + "/" + processName);
+                    if (bProcess.isEmpty()) mProcessMap.remove(buid);
+                    return null;
                 }
 
-                bpid = getUsingBPidL();
-                Slog.d(TAG, "init bUid = " + buid + ", bPid = " + bpid);
+                app = new ProcessRecord(info, processName);
+                app.uid = Process.myUid();
+                app.bpid = bpid;
+                app.buid = BPackageManagerService.get().getAppId(packageName);
+                app.callingBUid = getBUidByPidOrPackageName(callingPid, packageName);
+                app.userId = userId;
+                app.beginInitialization();
+
+                bProcess.put(processName, app);
+                mPidsSelfLocked.add(app);
             }
-            if (bpid == -1) {
-                // VirtualApp-style process managers fail the single launch when no stub is
-                // available. Crashing the host process here turns resource pressure into a full
-                // virtual-space crash and leaves even more stale records behind.
-                Slog.e(TAG, "No virtual process slot available for " + packageName + "/" + processName);
-                if (bProcess.isEmpty()) mProcessMap.remove(buid);
+        }
+
+        // Never block the global process map while another caller performs the provider/Binder
+        // handshake. Wait only on that specific process record and always with a hard timeout.
+        if (pending != null) {
+            boolean signalled = pending.initLock.block(INIT_WAIT_TIMEOUT_MS);
+            if (!signalled) {
+                Slog.w(TAG, "Timed out waiting for guest process initialization: " + processName);
+                return null;
+            }
+            return pending.initSucceeded && isRecordAlive(pending) ? pending : null;
+        }
+
+        boolean initialized = false;
+        try {
+            initialized = initAppProcessL(app);
+            return finalizeProcessInitialization(app, buid, processName, initialized);
+        } finally {
+            app.finishInitialization(initialized);
+        }
+    }
+
+    private ProcessRecord finalizeProcessInitialization(ProcessRecord app, int buid, String processName, boolean initialized) {
+        synchronized (mProcessLock) {
+            Map<String, ProcessRecord> processMap = mProcessMap.get(buid);
+            boolean stillCurrent = processMap != null && processMap.get(processName) == app;
+            if (!initialized || !stillCurrent) {
+                if (stillCurrent) removeRecordLocked(app, true);
                 return null;
             }
 
-            app = new ProcessRecord(info, processName);
-            app.uid = Process.myUid();
-            app.bpid = bpid;
-            app.buid = BPackageManagerService.get().getAppId(packageName);
-            app.callingBUid = getBUidByPidOrPackageName(callingPid, packageName);
-            app.userId = userId;
-
-            bProcess.put(processName, app);
-            mPidsSelfLocked.add(app);
-
-            if (!initAppProcessL(app)) {
-                removeRecordLocked(app, true);
-                app = null;
-            } else {
-                app.pid = getPid(BlackBoxCore.getContext(), ProxyManifest.getProcessName(app.bpid));
-                if (app.pid <= 0) {
-                    Slog.w(TAG, "Guest process initialized without a visible pid: " + processName);
-                }
+            app.pid = getPid(BlackBoxCore.getContext(), ProxyManifest.getProcessName(app.bpid));
+            if (app.pid <= 0) {
+                Slog.w(TAG, "Guest process initialized without a visible pid: " + processName);
             }
+            return app;
         }
-        return app;
     }
 
     /**
@@ -112,7 +143,9 @@ public class BProcessManagerService implements ISystemService {
         Set<Integer> using = new HashSet<>();
         List<ProcessRecord> snapshot = new ArrayList<>(mPidsSelfLocked);
         for (ProcessRecord record : snapshot) {
-            if (isRecordAlive(record)) {
+            if (record.initializing) {
+                if (record.bpid >= 0) using.add(record.bpid);
+            } else if (isRecordAlive(record)) {
                 if (record.bpid >= 0) using.add(record.bpid);
             } else {
                 Slog.w(TAG, "Reclaiming dead virtual slot bPid=" + record.bpid + " process=" + record.processName);
@@ -123,14 +156,11 @@ public class BProcessManagerService implements ISystemService {
         for (int i = 0; i < ProxyManifest.FREE_COUNT; i++) {
             if (using.contains(i)) continue;
 
-            // If Android still exposes an untracked stub process, terminate it before assigning
-            // the same provider/process slot to a new guest. This prevents old BActivityThread
-            // state from being reused for another package.
             int stalePid = getPid(BlackBoxCore.getContext(), ProxyManifest.getProcessName(i));
             if (stalePid > 0) {
                 boolean tracked = false;
                 for (ProcessRecord record : mPidsSelfLocked) {
-                    if (record.bpid == i && record.pid == stalePid && isRecordAlive(record)) {
+                    if (record.bpid == i && (record.initializing || (record.pid == stalePid && isRecordAlive(record)))) {
                         tracked = true;
                         break;
                     }
@@ -151,7 +181,7 @@ public class BProcessManagerService implements ISystemService {
     }
 
     private boolean isRecordAlive(ProcessRecord record) {
-        if (record == null) return false;
+        if (record == null || record.initializing) return false;
         try {
             return record.bActivityThread != null
                     && record.bActivityThread.asBinder() != null
@@ -163,6 +193,7 @@ public class BProcessManagerService implements ISystemService {
 
     private void removeRecordLocked(ProcessRecord record, boolean kill) {
         if (record == null) return;
+        if (record.initializing) record.finishInitialization(false);
         if (kill) {
             try { record.kill(); } catch (Throwable ignored) {}
         }
@@ -178,21 +209,19 @@ public class BProcessManagerService implements ISystemService {
     }
 
     public void restartAppProcess(String packageName, String processName, int userId) {
-        synchronized (mProcessLock) {
-            int callingPid = Binder.getCallingPid();
-            ProcessRecord app = findProcessByPid(callingPid);
-            if (app == null) {
-                String stubProcessName;
-                try {
-                    stubProcessName = getProcessName(BlackBoxCore.getContext(), callingPid);
-                } catch (Throwable e) {
-                    Slog.w(TAG, "Unable to resolve caller process during restart: " + e.getMessage());
-                    return;
-                }
-                int bpid = parseBPid(stubProcessName);
-                startProcessLocked(packageName, processName, userId, bpid, callingPid);
-            }
+        int callingPid = Binder.getCallingPid();
+        ProcessRecord app = findProcessByPid(callingPid);
+        if (app != null) return;
+
+        String stubProcessName;
+        try {
+            stubProcessName = getProcessName(BlackBoxCore.getContext(), callingPid);
+        } catch (Throwable e) {
+            Slog.w(TAG, "Unable to resolve caller process during restart: " + e.getMessage());
+            return;
         }
+        int bpid = parseBPid(stubProcessName);
+        startProcessLocked(packageName, processName, userId, bpid, callingPid);
     }
 
     private int parseBPid(String stubProcessName) {
@@ -257,7 +286,6 @@ public class BProcessManagerService implements ISystemService {
         } catch (RemoteException e) {
             Slog.w(TAG, "Unable to obtain application thread: " + e.getMessage());
         }
-        app.initLock.open();
     }
 
     public void onProcessDie(ProcessRecord record) {
@@ -276,11 +304,11 @@ public class BProcessManagerService implements ISystemService {
             Map<String, ProcessRecord> processRecordMap = mProcessMap.get(buid);
             if (processRecordMap == null) return null;
             ProcessRecord record = processRecordMap.get(processName);
-            if (record != null && !isRecordAlive(record)) {
+            if (record != null && !record.initializing && !isRecordAlive(record)) {
                 removeRecordLocked(record, true);
                 return null;
             }
-            return record;
+            return record != null && !record.initializing ? record : null;
         }
     }
 
@@ -310,6 +338,7 @@ public class BProcessManagerService implements ISystemService {
             if (process == null) return new ArrayList<>();
             List<ProcessRecord> result = new ArrayList<>();
             for (ProcessRecord record : new ArrayList<>(process.values())) {
+                if (record.initializing) continue;
                 if (isRecordAlive(record)) result.add(record);
                 else removeRecordLocked(record, true);
             }
@@ -331,6 +360,7 @@ public class BProcessManagerService implements ISystemService {
     public ProcessRecord findProcessByPid(int pid) {
         synchronized (mProcessLock) {
             for (ProcessRecord record : new ArrayList<>(mPidsSelfLocked)) {
+                if (record.initializing) continue;
                 if (!isRecordAlive(record)) {
                     removeRecordLocked(record, true);
                     continue;
