@@ -1,5 +1,7 @@
 package top.niunaijun.blackbox.core.system.permission;
 
+import android.Manifest;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.util.AtomicFile;
 
@@ -18,6 +20,7 @@ import java.util.Set;
 
 import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.core.system.ISystemService;
+import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager;
 import top.niunaijun.blackbox.utils.Slog;
 
 /**
@@ -54,6 +57,10 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
     @Override
     public boolean isPermissionGranted(String packageName, int userId, String permission) {
         if (packageName == null || permission == null) return false;
+        if (VirtualPermissionManager.isManagedRuntimePermission(permission)
+                && !isPermissionDeclared(packageName, userId, permission)) {
+            return false;
+        }
         synchronized (mLock) {
             ensureLoadedLocked();
             Map<String, Set<String>> packages = mGranted.get(userId);
@@ -74,7 +81,15 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
         if (packageName == null || permission == null) return;
         synchronized (mLock) {
             ensureLoadedLocked();
+            if (granted && VirtualPermissionManager.isManagedRuntimePermission(permission)
+                    && !isPermissionDeclared(packageName, userId, permission)) {
+                Slog.w(TAG, "Rejecting undeclared virtual permission " + permission + " for " + packageName);
+                setPermissionLocked(packageName, userId, permission, false);
+                saveLocked();
+                return;
+            }
             setPermissionLocked(packageName, userId, permission, granted);
+            normalizeLocationLocked(packageName, userId);
             saveLocked();
         }
     }
@@ -86,10 +101,17 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             ensureLoadedLocked();
             int count = Math.min(permissions.length, grants.length);
             for (int i = 0; i < count; i++) {
-                if (permissions[i] != null) {
-                    setPermissionLocked(packageName, userId, permissions[i], grants[i]);
+                String permission = permissions[i];
+                if (permission == null) continue;
+                boolean granted = grants[i];
+                if (granted && VirtualPermissionManager.isManagedRuntimePermission(permission)
+                        && !isPermissionDeclared(packageName, userId, permission)) {
+                    Slog.w(TAG, "Rejecting undeclared virtual permission " + permission + " for " + packageName);
+                    granted = false;
                 }
+                setPermissionLocked(packageName, userId, permission, granted);
             }
+            normalizeLocationLocked(packageName, userId);
             saveLocked();
         }
     }
@@ -103,7 +125,14 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             if (packages == null) return new String[0];
             Set<String> permissions = packages.get(packageName);
             if (permissions == null || permissions.isEmpty()) return new String[0];
-            return new ArrayList<>(permissions).toArray(new String[0]);
+            ArrayList<String> result = new ArrayList<>();
+            for (String permission : permissions) {
+                if (!VirtualPermissionManager.isManagedRuntimePermission(permission)
+                        || isPermissionDeclared(packageName, userId, permission)) {
+                    result.add(permission);
+                }
+            }
+            return result.toArray(new String[0]);
         }
     }
 
@@ -124,11 +153,13 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
     private void setPermissionLocked(String packageName, int userId, String permission, boolean granted) {
         Map<String, Set<String>> packages = mGranted.get(userId);
         if (packages == null) {
+            if (!granted) return;
             packages = new HashMap<>();
             mGranted.put(userId, packages);
         }
         Set<String> permissions = packages.get(packageName);
         if (permissions == null) {
+            if (!granted) return;
             permissions = new HashSet<>();
             packages.put(packageName, permissions);
         }
@@ -139,6 +170,48 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             if (permissions.isEmpty()) packages.remove(packageName);
         }
         if (packages.isEmpty()) mGranted.remove(userId);
+    }
+
+    /** Keep Android location permission dependencies internally consistent. */
+    private void normalizeLocationLocked(String packageName, int userId) {
+        Map<String, Set<String>> packages = mGranted.get(userId);
+        if (packages == null) return;
+        Set<String> permissions = packages.get(packageName);
+        if (permissions == null) return;
+
+        boolean fine = permissions.contains(Manifest.permission.ACCESS_FINE_LOCATION);
+        boolean background = permissions.contains(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+        boolean coarseDeclared = isPermissionDeclared(packageName, userId,
+                Manifest.permission.ACCESS_COARSE_LOCATION);
+
+        if ((fine || background) && coarseDeclared) {
+            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
+
+        boolean hasForeground = permissions.contains(Manifest.permission.ACCESS_COARSE_LOCATION)
+                || permissions.contains(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (!hasForeground) {
+            permissions.remove(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+        }
+
+        if (permissions.isEmpty()) {
+            packages.remove(packageName);
+            if (packages.isEmpty()) mGranted.remove(userId);
+        }
+    }
+
+    private boolean isPermissionDeclared(String packageName, int userId, String permission) {
+        try {
+            PackageInfo info = BlackBoxCore.getBPackageManager().getPackageInfo(
+                    packageName, PackageManager.GET_PERMISSIONS, userId);
+            if (info == null || info.requestedPermissions == null) return false;
+            for (String requested : info.requestedPermissions) {
+                if (permission.equals(requested)) return true;
+            }
+        } catch (Throwable e) {
+            Slog.w(TAG, "Unable to validate permission declaration for " + packageName + ": " + e.getMessage());
+        }
+        return false;
     }
 
     private void ensureLoadedLocked() {
@@ -175,7 +248,10 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
                     if (perms != null) {
                         for (int q = 0; q < perms.length(); q++) {
                             String perm = perms.optString(q, null);
-                            if (perm != null) permissionSet.add(perm);
+                            if (perm != null && (!VirtualPermissionManager.isManagedRuntimePermission(perm)
+                                    || isPermissionDeclared(name, userId, perm))) {
+                                permissionSet.add(perm);
+                            }
                         }
                     }
                     if (!permissionSet.isEmpty()) packages.put(name, permissionSet);
