@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Application;
+import android.app.Fragment;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
@@ -12,6 +13,7 @@ import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.PersistableBundle;
+import android.os.UserHandle;
 import android.util.Log;
 
 import java.lang.reflect.Field;
@@ -145,6 +147,43 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
                                             Bundle options) throws Throwable {
         if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
         return super.execStartActivity(context, contextThread, token, activity, intent, requestCode, options);
+    }
+
+    public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
+                                            Activity activity, Intent intent, int requestCode) throws Throwable {
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
+        return super.execStartActivity(context, contextThread, token, activity, intent, requestCode);
+    }
+
+    public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
+                                            Fragment fragment, Intent intent, int requestCode) throws Throwable {
+        Activity activity = fragment != null ? fragment.getActivity() : null;
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
+        return super.execStartActivity(context, contextThread, token, fragment, intent, requestCode);
+    }
+
+    public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
+                                            Fragment fragment, Intent intent, int requestCode,
+                                            Bundle options) throws Throwable {
+        Activity activity = fragment != null ? fragment.getActivity() : null;
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
+        return super.execStartActivity(context, contextThread, token, fragment, intent, requestCode, options);
+    }
+
+    public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
+                                            String target, Intent intent, int requestCode,
+                                            Bundle options) throws Throwable {
+        Activity activity = context instanceof Activity ? (Activity) context : null;
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
+        return super.execStartActivity(context, contextThread, token, target, intent, requestCode, options);
+    }
+
+    public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
+                                            Activity activity, Intent intent, int requestCode,
+                                            Bundle options, UserHandle userHandle) throws Throwable {
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
+        return super.execStartActivity(context, contextThread, token, activity, intent,
+                requestCode, options, userHandle);
     }
 
     private boolean handleVirtualPermissionRequest(Activity activity, Intent intent, int requestCode) {
