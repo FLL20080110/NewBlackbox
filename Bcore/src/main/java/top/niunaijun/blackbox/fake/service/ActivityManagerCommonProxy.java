@@ -25,7 +25,6 @@ import top.niunaijun.blackbox.utils.compat.StartActivityCompat;
 
 import static android.content.pm.PackageManager.GET_META_DATA;
 
-
 public class ActivityManagerCommonProxy {
     public static final String TAG = "CommonStub";
 
@@ -43,7 +42,9 @@ public class ActivityManagerCommonProxy {
             MethodParameterUtils.replaceFirstAppPkg(args);
             Intent intent = getIntent(args);
             Slog.d(TAG, "Hook in : " + intent);
-            assert intent != null;
+            if (intent == null) {
+                return method.invoke(who, args);
+            }
 
             if (intent.getParcelableExtra("_B_|_target_") != null) {
                 return method.invoke(who, args);
@@ -73,14 +74,7 @@ public class ActivityManagerCommonProxy {
             }
 
             if (isVirtualPermissionSettingsIntent(intent)) {
-                String guestPackage = BActivityThread.getAppPackageName();
-                Slog.d(TAG, "Redirect guest settings to virtual permission UI: " + guestPackage);
-                intent.setAction(null);
-                intent.setData(null);
-                intent.setPackage(null);
-                intent.setComponent(new ComponentName(BlackBoxCore.getHostPkg(), VIRTUAL_PERMISSION_ACTIVITY));
-                intent.putExtra(EXTRA_VIRTUAL_PERMISSION_PACKAGE, guestPackage);
-                intent.putExtra(EXTRA_VIRTUAL_PERMISSION_USER, BActivityThread.getUserId());
+                redirectToVirtualPermissionUi(intent);
                 return method.invoke(who, args);
             }
 
@@ -90,10 +84,7 @@ public class ActivityManagerCommonProxy {
             }
 
             ResolveInfo resolveInfo = BlackBoxCore.getBPackageManager().resolveActivity(
-                    intent,
-                    GET_META_DATA,
-                    StartActivityCompat.getResolvedType(args),
-                    BActivityThread.getUserId());
+                    intent, GET_META_DATA, StartActivityCompat.getResolvedType(args), BActivityThread.getUserId());
             if (resolveInfo == null) {
                 String origPackage = intent.getPackage();
                 if (intent.getPackage() == null && intent.getComponent() == null) {
@@ -102,10 +93,7 @@ public class ActivityManagerCommonProxy {
                     origPackage = intent.getPackage();
                 }
                 resolveInfo = BlackBoxCore.getBPackageManager().resolveActivity(
-                        intent,
-                        GET_META_DATA,
-                        StartActivityCompat.getResolvedType(args),
-                        BActivityThread.getUserId());
+                        intent, GET_META_DATA, StartActivityCompat.getResolvedType(args), BActivityThread.getUserId());
                 if (resolveInfo == null) {
                     intent.setPackage(origPackage);
                     return method.invoke(who, args);
@@ -115,29 +103,59 @@ public class ActivityManagerCommonProxy {
             intent.setExtrasClassLoader(who.getClass().getClassLoader());
             intent.setComponent(new ComponentName(resolveInfo.activityInfo.packageName, resolveInfo.activityInfo.name));
             BlackBoxCore.getBActivityManager().startActivityAms(BActivityThread.getUserId(),
-                    StartActivityCompat.getIntent(args),
-                    StartActivityCompat.getResolvedType(args),
-                    StartActivityCompat.getResultTo(args),
-                    StartActivityCompat.getResultWho(args),
-                    StartActivityCompat.getRequestCode(args),
-                    StartActivityCompat.getFlags(args),
+                    StartActivityCompat.getIntent(args), StartActivityCompat.getResolvedType(args),
+                    StartActivityCompat.getResultTo(args), StartActivityCompat.getResultWho(args),
+                    StartActivityCompat.getRequestCode(args), StartActivityCompat.getFlags(args),
                     StartActivityCompat.getOptions(args));
             return 0;
         }
 
+        private void redirectToVirtualPermissionUi(Intent intent) {
+            String guestPackage = BActivityThread.getAppPackageName();
+            Slog.d(TAG, "Redirect guest privacy/permission settings to virtual permission UI: " + guestPackage);
+            intent.setAction(null);
+            intent.setData(null);
+            intent.setPackage(null);
+            intent.setComponent(new ComponentName(BlackBoxCore.getHostPkg(), VIRTUAL_PERMISSION_ACTIVITY));
+            intent.putExtra(EXTRA_VIRTUAL_PERMISSION_PACKAGE, guestPackage);
+            intent.putExtra(EXTRA_VIRTUAL_PERMISSION_USER, BActivityThread.getUserId());
+        }
+
         private boolean isVirtualPermissionSettingsIntent(Intent intent) {
             String action = intent.getAction();
-            if (!Settings.ACTION_APPLICATION_DETAILS_SETTINGS.equals(action)
-                    && !Settings.ACTION_APPLICATION_SETTINGS.equals(action)
-                    && !Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS.equals(action)) {
+            boolean permissionAction =
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS.equals(action)
+                    || Settings.ACTION_APPLICATION_SETTINGS.equals(action)
+                    || Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS.equals(action)
+                    || "android.settings.APPLICATION_SETTINGS".equals(action)
+                    || "android.settings.MANAGE_APP_PERMISSIONS".equals(action)
+                    || "android.settings.APP_PERMISSIONS_SETTINGS".equals(action)
+                    || "android.settings.MANAGE_APP_PERMISSION".equals(action)
+                    || "android.settings.APPLICATION_NOTIFICATION_SETTINGS".equals(action)
+                    || "android.settings.APP_NOTIFICATION_SETTINGS".equals(action)
+                    || "android.settings.CHANNEL_NOTIFICATION_SETTINGS".equals(action);
+            if (!permissionAction) {
                 return false;
             }
 
             String guestPackage = BActivityThread.getAppPackageName();
+            if (guestPackage == null) {
+                return false;
+            }
             Uri data = intent.getData();
             if (data != null && "package".equals(data.getScheme())) {
                 String target = data.getSchemeSpecificPart();
                 return guestPackage.equals(target) || BlackBoxCore.getHostPkg().equals(target);
+            }
+
+            String targetPackage = firstStringExtra(intent,
+                    Settings.EXTRA_APP_PACKAGE,
+                    Intent.EXTRA_PACKAGE_NAME,
+                    "android.intent.extra.PACKAGE_NAME",
+                    "package",
+                    "packageName");
+            if (targetPackage != null) {
+                return guestPackage.equals(targetPackage) || BlackBoxCore.getHostPkg().equals(targetPackage);
             }
 
             String explicitPackage = intent.getPackage();
@@ -145,14 +163,22 @@ public class ActivityManagerCommonProxy {
                     || BlackBoxCore.getHostPkg().equals(explicitPackage);
         }
 
-        private Intent getIntent(Object[] args) {
-            int index;
-            if (BuildCompat.isR()) {
-                index = 3;
-            } else {
-                index = 2;
+        private String firstStringExtra(Intent intent, String... keys) {
+            for (String key : keys) {
+                try {
+                    String value = intent.getStringExtra(key);
+                    if (value != null && !value.isEmpty()) {
+                        return value;
+                    }
+                } catch (Throwable ignored) {
+                }
             }
-            if (args[index] instanceof Intent) {
+            return null;
+        }
+
+        private Intent getIntent(Object[] args) {
+            int index = BuildCompat.isR() ? 3 : 2;
+            if (index >= 0 && index < args.length && args[index] instanceof Intent) {
                 return (Intent) args[index];
             }
             for (Object arg : args) {
@@ -173,83 +199,39 @@ public class ActivityManagerCommonProxy {
             String[] resolvedTypes = (String[]) args[index++];
             IBinder resultTo = (IBinder) args[index++];
             Bundle options = (Bundle) args[index];
-
-            if (!ComponentUtils.isSelf(intents)) {
-                return method.invoke(who, args);
-            }
-
-            for (Intent intent : intents) {
-                intent.setExtrasClassLoader(who.getClass().getClassLoader());
-            }
-            return BlackBoxCore.getBActivityManager().startActivities(BActivityThread.getUserId(),
-                    intents, resolvedTypes, resultTo, options);
+            if (!ComponentUtils.isSelf(intents)) return method.invoke(who, args);
+            for (Intent intent : intents) intent.setExtrasClassLoader(who.getClass().getClassLoader());
+            return BlackBoxCore.getBActivityManager().startActivities(BActivityThread.getUserId(), intents, resolvedTypes, resultTo, options);
         }
-
-        public int getIntents() {
-            if (BuildCompat.isR()) {
-                return 3;
-            }
-            return 2;
-        }
+        public int getIntents() { return BuildCompat.isR() ? 3 : 2; }
     }
 
     @ProxyMethod("startIntentSenderForResult")
     public static class StartIntentSenderForResult extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { return method.invoke(who, args); }
     }
-
     @ProxyMethod("activityResumed")
     public static class ActivityResumed extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            BlackBoxCore.getBActivityManager().onActivityResumed((IBinder) args[0]);
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { BlackBoxCore.getBActivityManager().onActivityResumed((IBinder) args[0]); return method.invoke(who, args); }
     }
-
     @ProxyMethod("activityDestroyed")
     public static class ActivityDestroyed extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            BlackBoxCore.getBActivityManager().onActivityDestroyed((IBinder) args[0]);
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { BlackBoxCore.getBActivityManager().onActivityDestroyed((IBinder) args[0]); return method.invoke(who, args); }
     }
-
     @ProxyMethod("finishActivity")
     public static class FinishActivity extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            BlackBoxCore.getBActivityManager().onFinishActivity((IBinder) args[0]);
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { BlackBoxCore.getBActivityManager().onFinishActivity((IBinder) args[0]); return method.invoke(who, args); }
     }
-
     @ProxyMethod("getAppTasks")
     public static class GetAppTasks extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            MethodParameterUtils.replaceFirstAppPkg(args);
-            return method.invoke(who, args);
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { MethodParameterUtils.replaceFirstAppPkg(args); return method.invoke(who, args); }
     }
-
     @ProxyMethod("getCallingPackage")
     public static class getCallingPackage extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            return BlackBoxCore.getBActivityManager().getCallingPackage((IBinder) args[0], BActivityThread.getUserId());
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { return BlackBoxCore.getBActivityManager().getCallingPackage((IBinder) args[0], BActivityThread.getUserId()); }
     }
-
     @ProxyMethod("getCallingActivity")
     public static class getCallingActivity extends MethodHook {
-        @Override
-        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            return BlackBoxCore.getBActivityManager().getCallingActivity((IBinder) args[0], BActivityThread.getUserId());
-        }
+        @Override protected Object hook(Object who, Method method, Object[] args) throws Throwable { return BlackBoxCore.getBActivityManager().getCallingActivity((IBinder) args[0], BActivityThread.getUserId()); }
     }
 }
