@@ -98,6 +98,10 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
                 || "IPermissionManagerProxy".equals(proxyName);
     }
 
+    private boolean isPackageManagerProxy() {
+        return "IPackageManagerProxy".equals(getClass().getSimpleName());
+    }
+
     private String findManagedPermission(Object[] args) {
         if (args == null) return null;
         for (Object arg : args) {
@@ -106,6 +110,15 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
             }
         }
         return null;
+    }
+
+    private boolean isLegacyPermissionMethod(Method method) {
+        if (!isPackageManagerProxy()) return false;
+        String name = method.getName();
+        return "checkPermission".equals(name)
+                || "checkSelfPermission".equals(name)
+                || "shouldShowRequestPermissionRationale".equals(name)
+                || "requestPermissions".equals(name);
     }
 
     /** Keep PackageManager, ActivityManager and PermissionManager permission checks consistent. */
@@ -135,8 +148,6 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
         if (permission == null || packageName == null) return null;
         int state = VirtualPermissionManager.getPermissionState(packageName,
                 BActivityThread.getUserId(), permission);
-        // Retryable denial mirrors Android's rationale=true. First request, granted and
-        // permanently-denied states return false.
         return state == VirtualPermissionManager.STATE_DENIED;
     }
 
@@ -156,15 +167,45 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
                 packageInfo.requestedPermissionsFlags.length);
         for (int i = 0; i < count; i++) {
             String permission = packageInfo.requestedPermissions[i];
-            if (!VirtualPermissionManager.isManagedRuntimePermission(permission)) continue;
-            if (VirtualPermissionManager.isPermissionGranted(packageName,
-                    BActivityThread.getUserId(), permission)) {
-                packageInfo.requestedPermissionsFlags[i] |= PackageInfo.REQUESTED_PERMISSION_GRANTED;
-            } else {
+            if (VirtualPermissionManager.isManagedRuntimePermission(permission)) {
+                if (VirtualPermissionManager.isPermissionGranted(packageName,
+                        BActivityThread.getUserId(), permission)) {
+                    packageInfo.requestedPermissionsFlags[i] |= PackageInfo.REQUESTED_PERMISSION_GRANTED;
+                } else {
+                    packageInfo.requestedPermissionsFlags[i] &= ~PackageInfo.REQUESTED_PERMISSION_GRANTED;
+                }
+            } else if (isLegacyForcedPermission(permission)) {
+                // Old package-manager hooks used to mark these special/non-runtime permissions as
+                // granted. They are not guest runtime grants, so never manufacture this flag here.
                 packageInfo.requestedPermissionsFlags[i] &= ~PackageInfo.REQUESTED_PERMISSION_GRANTED;
             }
         }
         return packageInfo;
+    }
+
+    private boolean isLegacyForcedPermission(String permission) {
+        if (permission == null) return false;
+        return "android.permission.FOREGROUND_SERVICE_MICROPHONE".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_CAMERA".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_LOCATION".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_HEALTH".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_DATA_SYNC".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_SPECIAL_USE".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_PHONE_CALL".equals(permission)
+                || "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE".equals(permission)
+                || "android.permission.MODIFY_AUDIO_SETTINGS".equals(permission)
+                || "android.permission.CAPTURE_AUDIO_OUTPUT".equals(permission);
+    }
+
+    private Object invokeBase(Method method, Object[] args) throws Throwable {
+        try {
+            return applyVirtualPermissionFlags(method.invoke(mBase, args));
+        } catch (Throwable e) {
+            Throwable cause = e.getCause();
+            throw cause != null ? cause : e;
+        }
     }
 
     @Override
@@ -175,13 +216,16 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
         Boolean rationaleResult = getVirtualRationaleResult(method, args);
         if (rationaleResult != null) return rationaleResult;
 
+        // Legacy IPackageManagerProxy permission hooks contained broad hard-grant compatibility
+        // rules. Managed runtime permissions are handled above. For non-managed permissions, use
+        // the underlying package manager instead of those old hard-grant hooks.
+        if (isLegacyPermissionMethod(method) && findManagedPermission(args) == null) {
+            return invokeBase(method, args);
+        }
+
         MethodHook methodHook = mMethodHookMap.get(method.getName());
         if (methodHook == null || !methodHook.isEnable()) {
-            try {
-                return applyVirtualPermissionFlags(method.invoke(mBase, args));
-            } catch (Throwable e) {
-                throw e.getCause();
-            }
+            return invokeBase(method, args);
         }
 
         Object result = methodHook.beforeHook(mBase, method, args);
