@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import top.niunaijun.blackbox.core.system.ISystemService;
+import top.niunaijun.blackbox.core.system.permission.BPermissionManagerService;
 import top.niunaijun.blackbox.core.system.pm.installer.CopyExecutor;
 import top.niunaijun.blackbox.core.system.pm.installer.CreatePackageExecutor;
 import top.niunaijun.blackbox.core.system.pm.installer.CreateUserExecutor;
@@ -12,7 +13,6 @@ import top.niunaijun.blackbox.core.system.pm.installer.RemoveAppExecutor;
 import top.niunaijun.blackbox.core.system.pm.installer.RemoveUserExecutor;
 import top.niunaijun.blackbox.entity.pm.InstallOption;
 import top.niunaijun.blackbox.utils.Slog;
-
 
 public class BPackageInstallerService extends IBPackageInstallerService.Stub implements ISystemService {
     private static final BPackageInstallerService sService = new BPackageInstallerService();
@@ -26,11 +26,8 @@ public class BPackageInstallerService extends IBPackageInstallerService.Stub imp
     @Override
     public int installPackageAsUser(BPackageSettings ps, int userId) {
         List<Executor> executors = new ArrayList<>();
-        
         executors.add(new CreateUserExecutor());
-        
         executors.add(new CreatePackageExecutor());
-        
         executors.add(new CopyExecutor());
         InstallOption option = ps.installOption;
         for (Executor executor : executors) {
@@ -47,10 +44,8 @@ public class BPackageInstallerService extends IBPackageInstallerService.Stub imp
     public int uninstallPackageAsUser(BPackageSettings ps, boolean removeApp, int userId) {
         List<Executor> executors = new ArrayList<>();
         if (removeApp) {
-            
             executors.add(new RemoveAppExecutor());
         }
-        
         executors.add(new RemoveUserExecutor());
         InstallOption option = ps.installOption;
         for (Executor executor : executors) {
@@ -60,24 +55,24 @@ public class BPackageInstallerService extends IBPackageInstallerService.Stub imp
                 return exec;
             }
         }
+        BPermissionManagerService.get().clearPackage(ps.pkg.packageName, userId);
         return 0;
     }
 
     @Override
     public int clearPackage(BPackageSettings ps, int userId) {
         List<Executor> executors = new ArrayList<>();
-        
         executors.add(new RemoveUserExecutor());
-        
         executors.add(new CreateUserExecutor());
         InstallOption option = ps.installOption;
         for (Executor executor : executors) {
             int exec = executor.exec(ps, option, userId);
-            Slog.d(TAG, "uninstallPackageAsUser: " + executor.getClass().getSimpleName() + " exec: " + exec);
+            Slog.d(TAG, "clearPackage: " + executor.getClass().getSimpleName() + " exec: " + exec);
             if (exec != 0) {
                 return exec;
             }
         }
+        BPermissionManagerService.get().clearPackage(ps.pkg.packageName, userId);
         return 0;
     }
 
@@ -98,6 +93,5 @@ public class BPackageInstallerService extends IBPackageInstallerService.Stub imp
 
     @Override
     public void systemReady() {
-
     }
 }
