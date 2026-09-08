@@ -5,6 +5,7 @@ import android.os.Binder;
 import android.os.ConditionVariable;
 import android.os.IInterface;
 import android.os.Process;
+import android.os.SystemClock;
 
 import java.util.Arrays;
 
@@ -24,11 +25,31 @@ public class ProcessRecord extends Binder {
     public int callingBUid;
     public int userId;
 
-    public ConditionVariable initLock = new ConditionVariable();
+    /**
+     * Initialization is deliberately tracked per record so callers never need to hold the global
+     * process-manager lock while a stub provider/Binder handshake is in progress.
+     */
+    public final ConditionVariable initLock = new ConditionVariable();
+    public volatile boolean initializing;
+    public volatile boolean initSucceeded;
+    public volatile long initStartedAt;
 
     public ProcessRecord(ApplicationInfo info, String processName) {
         this.info = info;
         this.processName = processName;
+    }
+
+    public void beginInitialization() {
+        initLock.close();
+        initSucceeded = false;
+        initializing = true;
+        initStartedAt = SystemClock.uptimeMillis();
+    }
+
+    public void finishInitialization(boolean success) {
+        initSucceeded = success;
+        initializing = false;
+        initLock.open();
     }
 
     public int getCallingBUid() {
