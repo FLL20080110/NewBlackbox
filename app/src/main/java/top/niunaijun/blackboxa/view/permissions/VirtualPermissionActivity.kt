@@ -29,6 +29,7 @@ class VirtualPermissionActivity : AppCompatActivity() {
     private var packageName: String = ""
     private var userId: Int = 0
     private var permissions: Array<String> = emptyArray()
+    private var labels: Array<String> = emptyArray()
     private var checked: BooleanArray = BooleanArray(0)
     private val boxes = linkedMapOf<Int, CheckBox>()
     private val actionButtons = mutableListOf<Button>()
@@ -74,17 +75,25 @@ class VirtualPermissionActivity : AppCompatActivity() {
         Thread({
             var error: Throwable? = null
             var loadedPermissions: Array<String> = emptyArray()
+            var loadedLabels: Array<String> = emptyArray()
             var loadedChecked = BooleanArray(0)
             try {
                 loadedPermissions = VirtualPermissionUi.requestedPermissions(targetPackage, targetUser)
                 if (loadedPermissions.isNotEmpty()) {
                     loadedChecked = VirtualPermissionUi.checked(targetPackage, targetUser, loadedPermissions)
+                    loadedLabels = try {
+                        VirtualPermissionUi.labels(applicationContext, loadedPermissions)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Failed to resolve permission labels", t)
+                        loadedPermissions.map { it.substringAfterLast('.') }.toTypedArray()
+                    }
                 }
             } catch (t: Throwable) {
                 error = t
                 Log.e(TAG, "Failed to load virtual permissions for $targetPackage/$targetUser", t)
             }
             val resultPermissions = loadedPermissions
+            val resultLabels = loadedLabels
             val resultChecked = loadedChecked
             val resultError = error
             runOnUiThread {
@@ -100,6 +109,7 @@ class VirtualPermissionActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
                 permissions = resultPermissions
+                labels = resultLabels
                 checked = resultChecked
                 renderPermissionScreen()
             }
@@ -107,12 +117,6 @@ class VirtualPermissionActivity : AppCompatActivity() {
     }
 
     private fun renderPermissionScreen() {
-        val labels = try {
-            VirtualPermissionUi.labels(this, permissions)
-        } catch (t: Throwable) {
-            Log.w(TAG, "Failed to resolve permission labels", t)
-            permissions.map { it.substringAfterLast('.') }.toTypedArray()
-        }
         boxes.clear()
         actionButtons.clear()
 
