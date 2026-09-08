@@ -156,17 +156,20 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         final int userId = BActivityThread.getUserId();
         if (packageName == null) return false;
 
-        List<String> undecided = new ArrayList<>();
+        List<String> promptable = new ArrayList<>();
         for (String permission : permissions) {
             int state = VirtualPermissionManager.getPermissionState(packageName, userId, permission);
-            if (state == VirtualPermissionManager.STATE_DEFAULT) undecided.add(permission);
+            if (state == VirtualPermissionManager.STATE_DEFAULT
+                    || state == VirtualPermissionManager.STATE_DENIED) {
+                promptable.add(permission);
+            }
         }
 
         final String[] callbackPermissions = permissions.clone();
-        if (undecided.isEmpty()) {
+        if (promptable.isEmpty()) {
             deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
         } else {
-            final String[] promptPermissions = undecided.toArray(new String[0]);
+            final String[] promptPermissions = promptable.toArray(new String[0]);
             activity.runOnUiThread(() -> showVirtualPermissionPrompt(
                     activity, packageName, userId, requestCode, callbackPermissions, promptPermissions));
         }
@@ -199,6 +202,14 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
                         for (String permission : promptPermissions) {
                             VirtualPermissionManager.setPermissionState(packageName, userId, permission,
                                     VirtualPermissionManager.STATE_DENIED);
+                        }
+                        deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
+                    })
+                    .setNeutralButton("拒绝且不再询问", (d, which) -> {
+                        handled[0] = true;
+                        for (String permission : promptPermissions) {
+                            VirtualPermissionManager.setPermissionState(packageName, userId, permission,
+                                    VirtualPermissionManager.STATE_DENIED_FIXED);
                         }
                         deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
                     }).create();
