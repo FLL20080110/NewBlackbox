@@ -14,7 +14,9 @@ import android.os.PersistableBundle;
 import android.util.Log;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import black.android.app.BRActivity;
 import black.android.app.BRActivityThread;
@@ -154,29 +156,29 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         final int userId = BActivityThread.getUserId();
         if (packageName == null) return false;
 
-        boolean allGranted = true;
+        List<String> undecided = new ArrayList<>();
         for (String permission : permissions) {
-            if (!VirtualPermissionManager.isPermissionGranted(packageName, userId, permission)) {
-                allGranted = false;
-                break;
-            }
+            int state = VirtualPermissionManager.getPermissionState(packageName, userId, permission);
+            if (state == VirtualPermissionManager.STATE_DEFAULT) undecided.add(permission);
         }
 
         final String[] callbackPermissions = permissions.clone();
-        if (allGranted) {
-            deliverPermissionResult(activity, requestCode, callbackPermissions, true);
+        if (undecided.isEmpty()) {
+            deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
         } else {
+            final String[] promptPermissions = undecided.toArray(new String[0]);
             activity.runOnUiThread(() -> showVirtualPermissionPrompt(
-                    activity, packageName, userId, requestCode, callbackPermissions));
+                    activity, packageName, userId, requestCode, callbackPermissions, promptPermissions));
         }
         return true;
     }
 
     private void showVirtualPermissionPrompt(Activity activity, String packageName, int userId,
-                                             int requestCode, String[] permissions) {
+                                             int requestCode, String[] callbackPermissions,
+                                             String[] promptPermissions) {
         final boolean[] handled = {false};
         StringBuilder message = new StringBuilder();
-        for (String permission : permissions) {
+        for (String permission : promptPermissions) {
             if (message.length() > 0) message.append('\n');
             message.append("• ").append(permission.substring(permission.lastIndexOf('.') + 1));
         }
@@ -186,35 +188,43 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
                     .setMessage(message.toString())
                     .setPositiveButton("允许", (d, which) -> {
                         handled[0] = true;
-                        boolean[] grants = new boolean[permissions.length];
-                        Arrays.fill(grants, true);
-                        VirtualPermissionManager.setPermissions(packageName, userId, permissions, grants);
-                        deliverPermissionResult(activity, requestCode, permissions, true);
+                        for (String permission : promptPermissions) {
+                            VirtualPermissionManager.setPermissionState(packageName, userId, permission,
+                                    VirtualPermissionManager.STATE_GRANTED);
+                        }
+                        deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
                     })
                     .setNegativeButton("拒绝", (d, which) -> {
                         handled[0] = true;
-                        boolean[] grants = new boolean[permissions.length];
-                        VirtualPermissionManager.setPermissions(packageName, userId, permissions, grants);
-                        deliverPermissionResult(activity, requestCode, permissions, false);
+                        for (String permission : promptPermissions) {
+                            VirtualPermissionManager.setPermissionState(packageName, userId, permission,
+                                    VirtualPermissionManager.STATE_DENIED);
+                        }
+                        deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
                     }).create();
             dialog.setOnCancelListener(d -> {
                 if (!handled[0]) {
-                    boolean[] grants = new boolean[permissions.length];
-                    VirtualPermissionManager.setPermissions(packageName, userId, permissions, grants);
-                    deliverPermissionResult(activity, requestCode, permissions, false);
+                    for (String permission : promptPermissions) {
+                        VirtualPermissionManager.setPermissionState(packageName, userId, permission,
+                                VirtualPermissionManager.STATE_DENIED);
+                    }
+                    deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
                 }
             });
             dialog.show();
         } catch (Throwable e) {
             Log.e(TAG, "Unable to show virtual permission prompt", e);
-            deliverPermissionResult(activity, requestCode, permissions, false);
+            deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
         }
     }
 
-    private void deliverPermissionResult(Activity activity, int requestCode,
-                                         String[] permissions, boolean granted) {
+    private void deliverPermissionResult(Activity activity, String packageName, int userId,
+                                         int requestCode, String[] permissions) {
         int[] results = new int[permissions.length];
-        Arrays.fill(results, granted ? PackageManager.PERMISSION_GRANTED : PackageManager.PERMISSION_DENIED);
+        for (int i = 0; i < permissions.length; i++) {
+            results[i] = VirtualPermissionManager.isPermissionGranted(packageName, userId, permissions[i])
+                    ? PackageManager.PERMISSION_GRANTED : PackageManager.PERMISSION_DENIED;
+        }
         Log.d(TAG, "Virtual runtime permission result: " + Arrays.toString(permissions)
                 + " => " + Arrays.toString(results));
         activity.runOnUiThread(() -> {
