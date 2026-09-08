@@ -67,11 +67,10 @@ JavaVM *BoxCore::getJavaVM() {
 
 void nativeHook(JNIEnv *env) {
     // Android 16 diagnostic mode: skip every native hook, including BaseHook
-    // and libc FileSystemHook. The previous build still crashed after all
-    // ArtMethod-based hooks were disabled, so this isolates whether any native
-    // interposition layer is responsible for the remaining failure.
+    // and libc FileSystemHook. This is intentionally minimal to isolate the
+    // remaining crash from native interposition.
     if (VMEnv.api_level >= 36) {
-        ALOGD("NativeCore: API36 diagnostic mode, skipping ALL native hooks");
+        ALOGD("NativeCore: API36 minimal mode, skipping ALL native hooks");
         return;
     }
 
@@ -100,7 +99,14 @@ void init(JNIEnv *env, jobject clazz, jint api_level) {
     VMEnv.loadEmptyDex = env->GetStaticMethodID(VMEnv.NativeCoreClass, "loadEmptyDex",
                                                 "()[J");
 
-    JniHook::InitJniHook(env, api_level);
+    // Do not even probe private ART layout on Android 16. The previous
+    // diagnostic build skipped hook installation but still ran InitJniHook(),
+    // so it was not a true no-ART-probing test.
+    if (api_level < 36) {
+        JniHook::InitJniHook(env, api_level);
+    } else {
+        ALOGD("NativeCore: API36 minimal mode, skipping JniHook ART probing");
+    }
 }
 
 void addIORule(JNIEnv *env, jclass clazz, jstring target_path,
@@ -112,6 +118,14 @@ void addIORule(JNIEnv *env, jclass clazz, jstring target_path,
 
 void enableIO(JNIEnv *env, jclass clazz) {
     ALOGD("set enableIO");
+
+    // IO::init() is native-layer setup too. Skip it on API 36 so this build
+    // truly tests the Java/Binder virtualization path without native IO setup.
+    if (VMEnv.api_level >= 36) {
+        ALOGD("NativeCore: API36 minimal mode, skipping IO::init");
+        return;
+    }
+
     IO::init(env);
     nativeHook(env);
 }
