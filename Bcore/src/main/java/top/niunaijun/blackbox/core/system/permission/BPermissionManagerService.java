@@ -23,51 +23,31 @@ import top.niunaijun.blackbox.core.system.ISystemService;
 import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager;
 import top.niunaijun.blackbox.utils.Slog;
 
-/**
- * Container-owned permission state for virtual packages.
- *
- * The Android package manager only knows the host package, therefore guest runtime permissions
- * must have a separate source of truth. This service lives in the BlackBox system process and is
- * accessed through Binder from manager UI and guest processes, avoiding SharedPreferences
- * multi-process cache races.
- */
+/** Container-owned permission state for virtual packages. */
 public final class BPermissionManagerService extends IBPermissionManagerService.Stub implements ISystemService {
     private static final String TAG = "BPermissionManagerService";
+    private static final int STATE_DEFAULT = 0;
+    private static final int STATE_GRANTED = 1;
+    private static final int STATE_DENIED = 2;
     private static final BPermissionManagerService sService = new BPermissionManagerService();
 
     private final Object mLock = new Object();
     private final Map<Integer, Map<String, Set<String>>> mGranted = new HashMap<>();
+    private final Map<Integer, Map<String, Set<String>>> mDenied = new HashMap<>();
     private AtomicFile mStateFile;
     private boolean mLoaded;
 
-    public static BPermissionManagerService get() {
-        return sService;
-    }
-
-    private BPermissionManagerService() {
-    }
+    public static BPermissionManagerService get() { return sService; }
+    private BPermissionManagerService() {}
 
     @Override
     public void systemReady() {
-        synchronized (mLock) {
-            ensureLoadedLocked();
-        }
+        synchronized (mLock) { ensureLoadedLocked(); }
     }
 
     @Override
     public boolean isPermissionGranted(String packageName, int userId, String permission) {
-        if (packageName == null || permission == null) return false;
-        if (VirtualPermissionManager.isManagedRuntimePermission(permission)
-                && !isPermissionDeclared(packageName, userId, permission)) {
-            return false;
-        }
-        synchronized (mLock) {
-            ensureLoadedLocked();
-            Map<String, Set<String>> packages = mGranted.get(userId);
-            if (packages == null) return false;
-            Set<String> permissions = packages.get(packageName);
-            return permissions != null && permissions.contains(permission);
-        }
+        return getPermissionState(packageName, userId, permission) == STATE_GRANTED;
     }
 
     @Override
@@ -77,18 +57,36 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
     }
 
     @Override
+    public int getPermissionState(String packageName, int userId, String permission) {
+        if (packageName == null || permission == null) return STATE_DEFAULT;
+        if (VirtualPermissionManager.isManagedRuntimePermission(permission)
+                && !isPermissionDeclared(packageName, userId, permission)) {
+            return STATE_DENIED;
+        }
+        synchronized (mLock) {
+            ensureLoadedLocked();
+            if (containsLocked(mGranted, packageName, userId, permission)) return STATE_GRANTED;
+            if (containsLocked(mDenied, packageName, userId, permission)) return STATE_DENIED;
+            return STATE_DEFAULT;
+        }
+    }
+
+    @Override
     public void setPermission(String packageName, int userId, String permission, boolean granted) {
+        setPermissionState(packageName, userId, permission, granted ? STATE_GRANTED : STATE_DENIED);
+    }
+
+    @Override
+    public void setPermissionState(String packageName, int userId, String permission, int state) {
         if (packageName == null || permission == null) return;
         synchronized (mLock) {
             ensureLoadedLocked();
-            if (granted && VirtualPermissionManager.isManagedRuntimePermission(permission)
+            if (state == STATE_GRANTED && VirtualPermissionManager.isManagedRuntimePermission(permission)
                     && !isPermissionDeclared(packageName, userId, permission)) {
                 Slog.w(TAG, "Rejecting undeclared virtual permission " + permission + " for " + packageName);
-                setPermissionLocked(packageName, userId, permission, false);
-                saveLocked();
-                return;
+                state = STATE_DENIED;
             }
-            setPermissionLocked(packageName, userId, permission, granted);
+            setPermissionStateLocked(packageName, userId, permission, state);
             normalizeLocationLocked(packageName, userId);
             saveLocked();
         }
@@ -103,13 +101,12 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             for (int i = 0; i < count; i++) {
                 String permission = permissions[i];
                 if (permission == null) continue;
-                boolean granted = grants[i];
-                if (granted && VirtualPermissionManager.isManagedRuntimePermission(permission)
+                int state = grants[i] ? STATE_GRANTED : STATE_DENIED;
+                if (state == STATE_GRANTED && VirtualPermissionManager.isManagedRuntimePermission(permission)
                         && !isPermissionDeclared(packageName, userId, permission)) {
-                    Slog.w(TAG, "Rejecting undeclared virtual permission " + permission + " for " + packageName);
-                    granted = false;
+                    state = STATE_DENIED;
                 }
-                setPermissionLocked(packageName, userId, permission, granted);
+                setPermissionStateLocked(packageName, userId, permission, state);
             }
             normalizeLocationLocked(packageName, userId);
             saveLocked();
@@ -121,16 +118,12 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
         if (packageName == null) return new String[0];
         synchronized (mLock) {
             ensureLoadedLocked();
-            Map<String, Set<String>> packages = mGranted.get(userId);
-            if (packages == null) return new String[0];
-            Set<String> permissions = packages.get(packageName);
+            Set<String> permissions = getSetLocked(mGranted, packageName, userId, false);
             if (permissions == null || permissions.isEmpty()) return new String[0];
             ArrayList<String> result = new ArrayList<>();
             for (String permission : permissions) {
                 if (!VirtualPermissionManager.isManagedRuntimePermission(permission)
-                        || isPermissionDeclared(packageName, userId, permission)) {
-                    result.add(permission);
-                }
+                        || isPermissionDeclared(packageName, userId, permission)) result.add(permission);
             }
             return result.toArray(new String[0]);
         }
@@ -141,62 +134,74 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
         if (packageName == null) return;
         synchronized (mLock) {
             ensureLoadedLocked();
-            Map<String, Set<String>> packages = mGranted.get(userId);
-            if (packages != null) {
-                packages.remove(packageName);
-                if (packages.isEmpty()) mGranted.remove(userId);
-                saveLocked();
-            }
+            removePackageLocked(mGranted, packageName, userId);
+            removePackageLocked(mDenied, packageName, userId);
+            saveLocked();
         }
     }
 
-    private void setPermissionLocked(String packageName, int userId, String permission, boolean granted) {
-        Map<String, Set<String>> packages = mGranted.get(userId);
+    private void setPermissionStateLocked(String packageName, int userId, String permission, int state) {
+        removePermissionLocked(mGranted, packageName, userId, permission);
+        removePermissionLocked(mDenied, packageName, userId, permission);
+        if (state == STATE_GRANTED) getSetLocked(mGranted, packageName, userId, true).add(permission);
+        else if (state == STATE_DENIED) getSetLocked(mDenied, packageName, userId, true).add(permission);
+    }
+
+    private boolean containsLocked(Map<Integer, Map<String, Set<String>>> store,
+                                   String packageName, int userId, String permission) {
+        Set<String> set = getSetLocked(store, packageName, userId, false);
+        return set != null && set.contains(permission);
+    }
+
+    private Set<String> getSetLocked(Map<Integer, Map<String, Set<String>>> store,
+                                     String packageName, int userId, boolean create) {
+        Map<String, Set<String>> packages = store.get(userId);
         if (packages == null) {
-            if (!granted) return;
+            if (!create) return null;
             packages = new HashMap<>();
-            mGranted.put(userId, packages);
+            store.put(userId, packages);
         }
-        Set<String> permissions = packages.get(packageName);
-        if (permissions == null) {
-            if (!granted) return;
-            permissions = new HashSet<>();
-            packages.put(packageName, permissions);
+        Set<String> set = packages.get(packageName);
+        if (set == null && create) {
+            set = new HashSet<>();
+            packages.put(packageName, set);
         }
-        if (granted) {
-            permissions.add(permission);
-        } else {
-            permissions.remove(permission);
-            if (permissions.isEmpty()) packages.remove(packageName);
-        }
-        if (packages.isEmpty()) mGranted.remove(userId);
+        return set;
+    }
+
+    private void removePermissionLocked(Map<Integer, Map<String, Set<String>>> store,
+                                        String packageName, int userId, String permission) {
+        Map<String, Set<String>> packages = store.get(userId);
+        if (packages == null) return;
+        Set<String> set = packages.get(packageName);
+        if (set == null) return;
+        set.remove(permission);
+        if (set.isEmpty()) packages.remove(packageName);
+        if (packages.isEmpty()) store.remove(userId);
+    }
+
+    private void removePackageLocked(Map<Integer, Map<String, Set<String>>> store,
+                                     String packageName, int userId) {
+        Map<String, Set<String>> packages = store.get(userId);
+        if (packages == null) return;
+        packages.remove(packageName);
+        if (packages.isEmpty()) store.remove(userId);
     }
 
     /** Keep Android location permission dependencies internally consistent. */
     private void normalizeLocationLocked(String packageName, int userId) {
-        Map<String, Set<String>> packages = mGranted.get(userId);
-        if (packages == null) return;
-        Set<String> permissions = packages.get(packageName);
-        if (permissions == null) return;
-
-        boolean fine = permissions.contains(Manifest.permission.ACCESS_FINE_LOCATION);
-        boolean background = permissions.contains(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
-        boolean coarseDeclared = isPermissionDeclared(packageName, userId,
-                Manifest.permission.ACCESS_COARSE_LOCATION);
-
-        if ((fine || background) && coarseDeclared) {
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        Set<String> granted = getSetLocked(mGranted, packageName, userId, false);
+        if (granted == null) return;
+        boolean fine = granted.contains(Manifest.permission.ACCESS_FINE_LOCATION);
+        boolean background = granted.contains(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+        if ((fine || background) && isPermissionDeclared(packageName, userId, Manifest.permission.ACCESS_COARSE_LOCATION)) {
+            setPermissionStateLocked(packageName, userId, Manifest.permission.ACCESS_COARSE_LOCATION, STATE_GRANTED);
+            granted = getSetLocked(mGranted, packageName, userId, false);
         }
-
-        boolean hasForeground = permissions.contains(Manifest.permission.ACCESS_COARSE_LOCATION)
-                || permissions.contains(Manifest.permission.ACCESS_FINE_LOCATION);
+        boolean hasForeground = granted != null && (granted.contains(Manifest.permission.ACCESS_COARSE_LOCATION)
+                || granted.contains(Manifest.permission.ACCESS_FINE_LOCATION));
         if (!hasForeground) {
-            permissions.remove(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
-        }
-
-        if (permissions.isEmpty()) {
-            packages.remove(packageName);
-            if (packages.isEmpty()) mGranted.remove(userId);
+            setPermissionStateLocked(packageName, userId, Manifest.permission.ACCESS_BACKGROUND_LOCATION, STATE_DENIED);
         }
     }
 
@@ -205,9 +210,7 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             PackageInfo info = BlackBoxCore.getBPackageManager().getPackageInfo(
                     packageName, PackageManager.GET_PERMISSIONS, userId);
             if (info == null || info.requestedPermissions == null) return false;
-            for (String requested : info.requestedPermissions) {
-                if (permission.equals(requested)) return true;
-            }
+            for (String requested : info.requestedPermissions) if (permission.equals(requested)) return true;
         } catch (Throwable e) {
             Slog.w(TAG, "Unable to validate permission declaration for " + packageName + ": " + e.getMessage());
         }
@@ -237,29 +240,31 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
                 int userId = user.optInt("id", 0);
                 JSONArray packagesArray = user.optJSONArray("packages");
                 if (packagesArray == null) continue;
-                Map<String, Set<String>> packages = new HashMap<>();
                 for (int p = 0; p < packagesArray.length(); p++) {
                     JSONObject pkg = packagesArray.optJSONObject(p);
                     if (pkg == null) continue;
                     String name = pkg.optString("name", null);
                     if (name == null) continue;
-                    JSONArray perms = pkg.optJSONArray("permissions");
-                    Set<String> permissionSet = new HashSet<>();
-                    if (perms != null) {
-                        for (int q = 0; q < perms.length(); q++) {
-                            String perm = perms.optString(q, null);
-                            if (perm != null && (!VirtualPermissionManager.isManagedRuntimePermission(perm)
-                                    || isPermissionDeclared(name, userId, perm))) {
-                                permissionSet.add(perm);
-                            }
-                        }
-                    }
-                    if (!permissionSet.isEmpty()) packages.put(name, permissionSet);
+                    // "permissions" is the legacy granted-only format; keep migration support.
+                    loadPermissionArrayLocked(mGranted, name, userId, pkg.optJSONArray("permissions"));
+                    loadPermissionArrayLocked(mGranted, name, userId, pkg.optJSONArray("granted"));
+                    loadPermissionArrayLocked(mDenied, name, userId, pkg.optJSONArray("denied"));
                 }
-                if (!packages.isEmpty()) mGranted.put(userId, packages);
             }
         } catch (Throwable e) {
             Slog.e(TAG, "Unable to load virtual permissions: " + e.getMessage());
+        }
+    }
+
+    private void loadPermissionArrayLocked(Map<Integer, Map<String, Set<String>>> store,
+                                           String packageName, int userId, JSONArray array) {
+        if (array == null) return;
+        for (int i = 0; i < array.length(); i++) {
+            String permission = array.optString(i, null);
+            if (permission == null) continue;
+            if (VirtualPermissionManager.isManagedRuntimePermission(permission)
+                    && !isPermissionDeclared(packageName, userId, permission)) continue;
+            getSetLocked(store, packageName, userId, true).add(permission);
         }
     }
 
@@ -269,21 +274,29 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
         try {
             JSONObject root = new JSONObject();
             JSONArray users = new JSONArray();
-            for (Map.Entry<Integer, Map<String, Set<String>>> userEntry : mGranted.entrySet()) {
+            Set<Integer> userIds = new HashSet<>();
+            userIds.addAll(mGranted.keySet());
+            userIds.addAll(mDenied.keySet());
+            for (Integer userId : userIds) {
                 JSONObject user = new JSONObject();
-                user.put("id", userEntry.getKey());
+                user.put("id", userId);
                 JSONArray packages = new JSONArray();
-                for (Map.Entry<String, Set<String>> packageEntry : userEntry.getValue().entrySet()) {
+                Set<String> packageNames = new HashSet<>();
+                Map<String, Set<String>> grantedPackages = mGranted.get(userId);
+                Map<String, Set<String>> deniedPackages = mDenied.get(userId);
+                if (grantedPackages != null) packageNames.addAll(grantedPackages.keySet());
+                if (deniedPackages != null) packageNames.addAll(deniedPackages.keySet());
+                for (String packageName : packageNames) {
                     JSONObject pkg = new JSONObject();
-                    pkg.put("name", packageEntry.getKey());
-                    JSONArray permissions = new JSONArray();
-                    for (String permission : packageEntry.getValue()) permissions.put(permission);
-                    pkg.put("permissions", permissions);
+                    pkg.put("name", packageName);
+                    pkg.put("granted", toJsonArray(grantedPackages == null ? null : grantedPackages.get(packageName)));
+                    pkg.put("denied", toJsonArray(deniedPackages == null ? null : deniedPackages.get(packageName)));
                     packages.put(pkg);
                 }
                 user.put("packages", packages);
                 users.put(user);
             }
+            root.put("version", 2);
             root.put("users", users);
             byte[] bytes = root.toString().getBytes(StandardCharsets.UTF_8);
             out = mStateFile.startWrite();
@@ -294,5 +307,11 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             if (out != null) mStateFile.failWrite(out);
             Slog.e(TAG, "Unable to save virtual permissions: " + e.getMessage());
         }
+    }
+
+    private JSONArray toJsonArray(Set<String> permissions) {
+        JSONArray array = new JSONArray();
+        if (permissions != null) for (String permission : permissions) array.put(permission);
+        return array;
     }
 }
