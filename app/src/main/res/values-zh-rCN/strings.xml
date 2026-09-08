@@ -27,6 +27,12 @@
     <string name="done">完成</string>
     <string name="cancel">取消</string>
     <string name="permission_setting">权限设置</string>
+    <string name="virtual_permissions">虚拟权限设置</string>
+    <string name="virtual_permissions_title">%s 的权限</string>
+    <string name="permission_coarse_location">大致位置</string>
+    <string name="permission_fine_location">精确位置</string>
+    <string name="permission_background_location">后台位置</string>
+    <string name="virtual_permissions_saved">虚拟权限已保存，请重启该应用后生效。</string>
     <string name="no_reminders">不再提醒</string>
     <string name="app_stop">停止运行</string>
     <string name="app_stop_hint">确定要强制停止 %s 吗？</string>
