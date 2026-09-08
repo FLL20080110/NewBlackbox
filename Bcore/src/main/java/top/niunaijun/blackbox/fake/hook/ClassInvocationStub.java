@@ -1,5 +1,6 @@
 package top.niunaijun.blackbox.fake.hook;
 
+import android.Manifest;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -9,6 +10,8 @@ import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.Map;
 
+import top.niunaijun.blackbox.app.BActivityThread;
+import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager;
 import top.niunaijun.blackbox.utils.MethodParameterUtils;
 
 
@@ -100,18 +103,58 @@ public abstract class ClassInvocationStub implements InvocationHandler, IInjectH
         mMethodHookMap.put(name, methodHook);
     }
 
+    /**
+     * Android routes runtime permission queries through different Binder services
+     * depending on framework/API path. Keep location permission state consistent
+     * for a guest across PackageManager, ActivityManager and PermissionManager.
+     */
+    private Integer getVirtualLocationPermissionResult(Method method, Object[] args) {
+        String methodName = method.getName();
+        if (!"checkPermission".equals(methodName)
+                && !"checkSelfPermission".equals(methodName)
+                && !"checkUidPermission".equals(methodName)
+                && !"checkPermissionUncached".equals(methodName)) {
+            return null;
+        }
+
+        String proxyName = getClass().getSimpleName();
+        if (!"IPackageManagerProxy".equals(proxyName)
+                && !"IActivityManagerProxy".equals(proxyName)
+                && !"IPermissionManagerProxy".equals(proxyName)) {
+            return null;
+        }
+
+        String permission = null;
+        if (args != null) {
+            for (Object arg : args) {
+                if (!(arg instanceof String)) continue;
+                String value = (String) arg;
+                if (Manifest.permission.ACCESS_FINE_LOCATION.equals(value)
+                        || Manifest.permission.ACCESS_COARSE_LOCATION.equals(value)
+                        || Manifest.permission.ACCESS_BACKGROUND_LOCATION.equals(value)) {
+                    permission = value;
+                    break;
+                }
+            }
+        }
+        if (permission == null) {
+            return null;
+        }
+
+        String packageName = BActivityThread.getAppPackageName();
+        if (packageName == null) {
+            return null;
+        }
+        return VirtualPermissionManager.checkPermission(
+                packageName, BActivityThread.getUserId(), permission);
+    }
+
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-
-
-
-
-
-
-
-
-
-
+        Integer virtualPermissionResult = getVirtualLocationPermissionResult(method, args);
+        if (virtualPermissionResult != null) {
+            return virtualPermissionResult;
+        }
 
         MethodHook methodHook = mMethodHookMap.get(method.getName());
         if (methodHook == null || !methodHook.isEnable()) {
