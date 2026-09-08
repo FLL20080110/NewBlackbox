@@ -97,6 +97,51 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
         }
     }
 
+    /** Runtime permissions whose grant state belongs to the virtual guest, not the host package. */
+    public static boolean isManagedRuntimePermission(String permission) {
+        if (permission == null) return false;
+        switch (permission) {
+            case "android.permission.ACCESS_COARSE_LOCATION":
+            case "android.permission.ACCESS_FINE_LOCATION":
+            case "android.permission.ACCESS_BACKGROUND_LOCATION":
+            case "android.permission.CAMERA":
+            case "android.permission.RECORD_AUDIO":
+            case "android.permission.READ_CONTACTS":
+            case "android.permission.WRITE_CONTACTS":
+            case "android.permission.GET_ACCOUNTS":
+            case "android.permission.READ_CALENDAR":
+            case "android.permission.WRITE_CALENDAR":
+            case "android.permission.READ_EXTERNAL_STORAGE":
+            case "android.permission.WRITE_EXTERNAL_STORAGE":
+            case "android.permission.READ_MEDIA_IMAGES":
+            case "android.permission.READ_MEDIA_VIDEO":
+            case "android.permission.READ_MEDIA_AUDIO":
+            case "android.permission.READ_PHONE_STATE":
+            case "android.permission.READ_PHONE_NUMBERS":
+            case "android.permission.CALL_PHONE":
+            case "android.permission.ANSWER_PHONE_CALLS":
+            case "android.permission.ADD_VOICEMAIL":
+            case "android.permission.USE_SIP":
+            case "android.permission.PROCESS_OUTGOING_CALLS":
+            case "android.permission.SEND_SMS":
+            case "android.permission.RECEIVE_SMS":
+            case "android.permission.READ_SMS":
+            case "android.permission.RECEIVE_WAP_PUSH":
+            case "android.permission.RECEIVE_MMS":
+            case "android.permission.BODY_SENSORS":
+            case "android.permission.BODY_SENSORS_BACKGROUND":
+            case "android.permission.ACTIVITY_RECOGNITION":
+            case "android.permission.BLUETOOTH_SCAN":
+            case "android.permission.BLUETOOTH_CONNECT":
+            case "android.permission.BLUETOOTH_ADVERTISE":
+            case "android.permission.NEARBY_WIFI_DEVICES":
+            case "android.permission.POST_NOTIFICATIONS":
+                return true;
+            default:
+                return false;
+        }
+    }
+
     public static boolean isLocationPermission(String permission) {
         return Manifest.permission.ACCESS_FINE_LOCATION.equals(permission)
                 || Manifest.permission.ACCESS_COARSE_LOCATION.equals(permission)
