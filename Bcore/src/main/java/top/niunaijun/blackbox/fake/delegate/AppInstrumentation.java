@@ -17,7 +17,9 @@ import android.util.Log;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import black.android.app.BRActivity;
 import black.android.app.BRActivityThread;
@@ -178,49 +180,56 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     }
 
     /**
-     * Background location is not an independent first-step grant. If foreground location has not
-     * already been granted, resolve the foreground request first and only then ask for background.
+     * Background location is staged after foreground location. Other permissions are then shown by
+     * logical permission group while their grant state remains stored per concrete permission.
      */
     private void showVirtualPermissionSequence(Activity activity, String packageName, int userId,
                                                int requestCode, String[] callbackPermissions,
                                                String[] promptPermissions) {
-        boolean asksBackground = containsPermission(promptPermissions, Manifest.permission.ACCESS_BACKGROUND_LOCATION);
-        boolean hasForeground = hasForegroundLocation(packageName, userId);
-        if (!asksBackground || hasForeground) {
-            showVirtualPermissionPrompt(activity, packageName, userId, promptPermissions,
-                    () -> deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions));
-            return;
-        }
+        boolean asksBackground = containsPermission(promptPermissions,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION);
 
         List<String> firstStage = new ArrayList<>();
         for (String permission : promptPermissions) {
-            if (!Manifest.permission.ACCESS_BACKGROUND_LOCATION.equals(permission)) firstStage.add(permission);
+            if (!Manifest.permission.ACCESS_BACKGROUND_LOCATION.equals(permission)) {
+                firstStage.add(permission);
+            }
         }
 
-        if (firstStage.isEmpty()) {
-            // Requesting background-only before foreground location is invalid in the virtual model.
-            VirtualPermissionManager.setPermissionState(packageName, userId,
-                    Manifest.permission.ACCESS_BACKGROUND_LOCATION, VirtualPermissionManager.STATE_DENIED);
-            deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
+        Runnable finish = () -> deliverPermissionResult(
+                activity, packageName, userId, requestCode, callbackPermissions);
+
+        if (!asksBackground) {
+            showVirtualPermissionGroups(activity, packageName, userId,
+                    firstStage.toArray(new String[0]), finish);
             return;
         }
 
-        showVirtualPermissionPrompt(activity, packageName, userId, firstStage.toArray(new String[0]), () -> {
+        Runnable backgroundStage = () -> {
             if (hasForegroundLocation(packageName, userId)) {
-                showVirtualPermissionPrompt(activity, packageName, userId,
-                        new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
-                        () -> deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions));
+                showVirtualPermissionGroups(activity, packageName, userId,
+                        new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION}, finish);
             } else {
                 VirtualPermissionManager.setPermissionState(packageName, userId,
-                        Manifest.permission.ACCESS_BACKGROUND_LOCATION, VirtualPermissionManager.STATE_DENIED);
-                deliverPermissionResult(activity, packageName, userId, requestCode, callbackPermissions);
+                        Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                        VirtualPermissionManager.STATE_DENIED);
+                finish.run();
             }
-        });
+        };
+
+        if (firstStage.isEmpty()) {
+            backgroundStage.run();
+        } else {
+            showVirtualPermissionGroups(activity, packageName, userId,
+                    firstStage.toArray(new String[0]), backgroundStage);
+        }
     }
 
     private boolean hasForegroundLocation(String packageName, int userId) {
-        return VirtualPermissionManager.isPermissionGranted(packageName, userId, Manifest.permission.ACCESS_FINE_LOCATION)
-                || VirtualPermissionManager.isPermissionGranted(packageName, userId, Manifest.permission.ACCESS_COARSE_LOCATION);
+        return VirtualPermissionManager.isPermissionGranted(packageName, userId,
+                Manifest.permission.ACCESS_FINE_LOCATION)
+                || VirtualPermissionManager.isPermissionGranted(packageName, userId,
+                Manifest.permission.ACCESS_COARSE_LOCATION);
     }
 
     private boolean containsPermission(String[] permissions, String wanted) {
@@ -229,8 +238,45 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         return false;
     }
 
-    private void showVirtualPermissionPrompt(Activity activity, String packageName, int userId,
+    private void showVirtualPermissionGroups(Activity activity, String packageName, int userId,
                                              String[] promptPermissions, Runnable completion) {
+        if (promptPermissions == null || promptPermissions.length == 0) {
+            completion.run();
+            return;
+        }
+
+        LinkedHashMap<String, List<String>> grouped = new LinkedHashMap<>();
+        for (String permission : promptPermissions) {
+            String group = VirtualPermissionManager.getPermissionGroup(permission);
+            List<String> values = grouped.get(group);
+            if (values == null) {
+                values = new ArrayList<>();
+                grouped.put(group, values);
+            }
+            values.add(permission);
+        }
+        List<Map.Entry<String, List<String>>> groups = new ArrayList<>(grouped.entrySet());
+        showVirtualPermissionGroupAt(activity, packageName, userId, groups, 0, completion);
+    }
+
+    private void showVirtualPermissionGroupAt(Activity activity, String packageName, int userId,
+                                              List<Map.Entry<String, List<String>>> groups,
+                                              int index, Runnable completion) {
+        if (index >= groups.size()) {
+            completion.run();
+            return;
+        }
+        Map.Entry<String, List<String>> entry = groups.get(index);
+        String label = VirtualPermissionManager.getPermissionGroupLabel(entry.getKey());
+        String[] permissions = entry.getValue().toArray(new String[0]);
+        showVirtualPermissionPrompt(activity, packageName, userId, label, permissions,
+                () -> showVirtualPermissionGroupAt(activity, packageName, userId,
+                        groups, index + 1, completion));
+    }
+
+    private void showVirtualPermissionPrompt(Activity activity, String packageName, int userId,
+                                             String groupLabel, String[] promptPermissions,
+                                             Runnable completion) {
         final boolean[] handled = {false};
         StringBuilder message = new StringBuilder();
         for (String permission : promptPermissions) {
@@ -239,38 +285,30 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         }
         try {
             AlertDialog dialog = new AlertDialog.Builder(activity)
-                    .setTitle("权限请求")
+                    .setTitle("权限请求 · " + groupLabel)
                     .setMessage(message.toString())
                     .setPositiveButton("允许", (d, which) -> {
                         handled[0] = true;
-                        for (String permission : promptPermissions) {
-                            VirtualPermissionManager.setPermissionState(packageName, userId, permission,
-                                    VirtualPermissionManager.STATE_GRANTED);
-                        }
+                        setPermissionStates(packageName, userId, promptPermissions,
+                                VirtualPermissionManager.STATE_GRANTED);
                         completion.run();
                     })
                     .setNegativeButton("拒绝", (d, which) -> {
                         handled[0] = true;
-                        for (String permission : promptPermissions) {
-                            VirtualPermissionManager.setPermissionState(packageName, userId, permission,
-                                    VirtualPermissionManager.STATE_DENIED);
-                        }
+                        setPermissionStates(packageName, userId, promptPermissions,
+                                VirtualPermissionManager.STATE_DENIED);
                         completion.run();
                     })
                     .setNeutralButton("拒绝且不再询问", (d, which) -> {
                         handled[0] = true;
-                        for (String permission : promptPermissions) {
-                            VirtualPermissionManager.setPermissionState(packageName, userId, permission,
-                                    VirtualPermissionManager.STATE_DENIED_FIXED);
-                        }
+                        setPermissionStates(packageName, userId, promptPermissions,
+                                VirtualPermissionManager.STATE_DENIED_FIXED);
                         completion.run();
                     }).create();
             dialog.setOnCancelListener(d -> {
                 if (!handled[0]) {
-                    for (String permission : promptPermissions) {
-                        VirtualPermissionManager.setPermissionState(packageName, userId, permission,
-                                VirtualPermissionManager.STATE_DENIED);
-                    }
+                    setPermissionStates(packageName, userId, promptPermissions,
+                            VirtualPermissionManager.STATE_DENIED);
                     completion.run();
                 }
             });
@@ -278,6 +316,13 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         } catch (Throwable e) {
             Log.e(TAG, "Unable to show virtual permission prompt", e);
             completion.run();
+        }
+    }
+
+    private void setPermissionStates(String packageName, int userId,
+                                     String[] permissions, int state) {
+        for (String permission : permissions) {
+            VirtualPermissionManager.setPermissionState(packageName, userId, permission, state);
         }
     }
 
