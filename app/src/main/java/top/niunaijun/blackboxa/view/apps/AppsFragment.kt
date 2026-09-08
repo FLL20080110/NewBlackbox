@@ -1,12 +1,12 @@
 package top.niunaijun.blackboxa.view.apps
 
+import android.content.Intent
 import android.os.Bundle
 import android.text.TextUtils
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.os.bundleOf
 import androidx.fragment.app.Fragment
@@ -16,7 +16,6 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import cbfg.rvadapter.RVAdapter
 import com.afollestad.materialdialogs.MaterialDialog
 import top.niunaijun.blackbox.BlackBoxCore
-import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager
 import top.niunaijun.blackboxa.R
 import top.niunaijun.blackboxa.bean.AppInfo
 import top.niunaijun.blackboxa.databinding.FragmentAppsBinding
@@ -26,6 +25,7 @@ import top.niunaijun.blackboxa.util.inflate
 import top.niunaijun.blackboxa.util.toast
 import top.niunaijun.blackboxa.view.base.LoadingActivity
 import top.niunaijun.blackboxa.view.main.MainActivity
+import top.niunaijun.blackboxa.view.permissions.VirtualPermissionActivity
 import java.util.Collections
 
 class AppsFragment : Fragment() {
@@ -150,49 +150,14 @@ class AppsFragment : Fragment() {
     }
 
     private fun showVirtualPermissions(info: AppInfo) {
-        val packageName = info.packageName
-        val labels = arrayOf(
-            getString(R.string.permission_coarse_location),
-            getString(R.string.permission_fine_location),
-            getString(R.string.permission_background_location)
-        )
-        val checked = booleanArrayOf(
-            VirtualPermissionManager.isCoarseLocationGranted(packageName, userID),
-            VirtualPermissionManager.isFineLocationGranted(packageName, userID),
-            VirtualPermissionManager.isBackgroundLocationGranted(packageName, userID)
-        )
-
-        AlertDialog.Builder(requireContext())
-            .setTitle(getString(R.string.virtual_permissions_title, info.name))
-            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
-            .setPositiveButton(R.string.done) { _, _ ->
-                // Android treats precise/background location as depending on location access.
-                // Keep the virtual permission state internally consistent.
-                val coarse = checked[0] || checked[1] || checked[2]
-                val fine = checked[1]
-                val background = checked[2]
-
-                VirtualPermissionManager.setPermission(
-                    packageName, userID, android.Manifest.permission.ACCESS_COARSE_LOCATION, coarse
-                )
-                VirtualPermissionManager.setPermission(
-                    packageName, userID, android.Manifest.permission.ACCESS_FINE_LOCATION, fine
-                )
-                VirtualPermissionManager.setPermission(
-                    packageName, userID, android.Manifest.permission.ACCESS_BACKGROUND_LOCATION, background
-                )
-
-                try {
-                    BlackBoxCore.get().stopPackage(packageName, userID)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Unable to stop app after permission change: ${e.message}")
-                }
-                toast(R.string.virtual_permissions_saved)
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
+        try {
+            startActivity(Intent(requireContext(), VirtualPermissionActivity::class.java).apply {
+                putExtra(VirtualPermissionActivity.EXTRA_PACKAGE_NAME, info.packageName)
+                putExtra(VirtualPermissionActivity.EXTRA_USER_ID, userID)
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to open virtual permission settings: ${e.message}", e)
+        }
     }
 
     private fun initData() {
