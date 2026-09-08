@@ -190,6 +190,20 @@ public class ActivityManagerCommonProxy {
         }
     }
 
+    // Android 11+ moved more activity launches through IActivityTaskManager and OEM/Android 16
+    // builds frequently select feature/user/caller variants. They share the same return contract
+    // and argument semantics needed by StartActivity; the implementation scans for the Intent so
+    // it is resilient to signature shifts. This closes paths that previously bypassed the virtual
+    // permission/settings router and landed in the real PermissionController/Settings app.
+    @ProxyMethod("startActivityAsUser")
+    public static class StartActivityAsUser extends StartActivity {}
+
+    @ProxyMethod("startActivityWithFeature")
+    public static class StartActivityWithFeature extends StartActivity {}
+
+    @ProxyMethod("startActivityAsCaller")
+    public static class StartActivityAsCaller extends StartActivity {}
+
     @ProxyMethod("startActivities")
     public static class StartActivities extends MethodHook {
         @Override
