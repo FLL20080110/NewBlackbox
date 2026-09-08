@@ -40,9 +40,7 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     public static AppInstrumentation get() {
         if (sAppInstrumentation == null) {
             synchronized (AppInstrumentation.class) {
-                if (sAppInstrumentation == null) {
-                    sAppInstrumentation = new AppInstrumentation();
-                }
+                if (sAppInstrumentation == null) sAppInstrumentation = new AppInstrumentation();
             }
         }
         return sAppInstrumentation;
@@ -55,9 +53,8 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     public void injectHook() {
         try {
             Instrumentation mInstrumentation = getCurrInstrumentation();
-            if (mInstrumentation == this || checkInstrumentation(mInstrumentation))
-                return;
-            mBaseInstrumentation = (Instrumentation) mInstrumentation;
+            if (mInstrumentation == this || checkInstrumentation(mInstrumentation)) return;
+            mBaseInstrumentation = mInstrumentation;
             BRActivityThread.get(BlackBoxCore.mainThread())._set_mInstrumentation(this);
         } catch (Exception e) {
             e.printStackTrace();
@@ -75,13 +72,9 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     }
 
     private boolean checkInstrumentation(Instrumentation instrumentation) {
-        if (instrumentation instanceof AppInstrumentation) {
-            return true;
-        }
+        if (instrumentation instanceof AppInstrumentation) return true;
         Class<?> clazz = instrumentation.getClass();
-        if (Instrumentation.class.equals(clazz)) {
-            return false;
-        }
+        if (Instrumentation.class.equals(clazz)) return false;
         do {
             assert clazz != null;
             Field[] fields = clazz.getDeclaredFields();
@@ -90,9 +83,7 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
                     field.setAccessible(true);
                     try {
                         Object obj = field.get(instrumentation);
-                        if ((obj instanceof AppInstrumentation)) {
-                            return true;
-                        }
+                        if (obj instanceof AppInstrumentation) return true;
                     } catch (Exception e) {
                         return false;
                     }
@@ -115,16 +106,14 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         ActivityInfo info = BRActivity.get(activity).mActivityInfo();
         ContextCompat.fix(activity);
         ActivityCompat.fix(activity);
-        if (info.theme != 0) {
-            activity.getTheme().applyStyle(info.theme, true);
-        }
+        if (info.theme != 0) activity.getTheme().applyStyle(info.theme, true);
         ActivityManagerCompat.setActivityOrientation(activity, info.screenOrientation);
     }
 
     @Override
-    public Application newApplication(ClassLoader cl, String className, Context context) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+    public Application newApplication(ClassLoader cl, String className, Context context)
+            throws InstantiationException, IllegalAccessException, ClassNotFoundException {
         ContextCompat.fix(context);
-
         return super.newApplication(cl, className, context);
     }
 
@@ -146,7 +135,8 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         super.callApplicationOnCreate(app);
     }
 
-    public Activity newActivity(ClassLoader cl, String className, Intent intent) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+    public Activity newActivity(ClassLoader cl, String className, Intent intent)
+            throws InstantiationException, IllegalAccessException, ClassNotFoundException {
         try {
             return super.newActivity(cl, className, intent);
         } catch (ClassNotFoundException e) {
@@ -155,18 +145,14 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
     }
 
     /**
-     * Activity.requestPermissions() is implemented as an Instrumentation start of the
-     * permission controller activity. A virtual guest has no real package record in
-     * the host PackageManager, so Android's controller cannot produce a meaningful
-     * result for that guest. For location-only requests, answer from the container's
-     * per-app virtual permission store and deliver the normal Activity callback.
+     * Android's permission controller cannot operate on a guest-only package. Consume runtime
+     * permission requests that belong to the virtual permission system and return the container
+     * state through the same Activity callback the guest expects.
      */
     public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
                                             Activity activity, Intent intent, int requestCode,
                                             Bundle options) throws Throwable {
-        if (handleVirtualPermissionRequest(activity, intent, requestCode)) {
-            return null;
-        }
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) return null;
         return super.execStartActivity(context, contextThread, token, activity, intent, requestCode, options);
     }
 
@@ -176,30 +162,21 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         }
 
         String[] permissions = intent.getStringArrayExtra(EXTRA_REQUEST_PERMISSIONS_NAMES);
-        if (permissions == null || permissions.length == 0) {
-            return false;
-        }
+        if (permissions == null || permissions.length == 0) return false;
 
-        // Only consume requests that are entirely location permissions. Mixed requests
-        // continue through Android so unrelated permission behavior is unchanged.
+        // Consume only requests fully owned by the virtual runtime-permission subsystem.
         for (String permission : permissions) {
-            if (!VirtualPermissionManager.isLocationPermission(permission)) {
-                return false;
-            }
+            if (!VirtualPermissionManager.isManagedRuntimePermission(permission)) return false;
         }
 
         final String packageName = BActivityThread.getAppPackageName();
         final int userId = BActivityThread.getUserId();
-        if (packageName == null) {
-            return false;
-        }
+        if (packageName == null) return false;
 
         final int[] grantResults = new int[permissions.length];
         for (int i = 0; i < permissions.length; i++) {
-            grantResults[i] = VirtualPermissionManager.isPermissionGranted(
-                    packageName, userId, permissions[i])
-                    ? PackageManager.PERMISSION_GRANTED
-                    : PackageManager.PERMISSION_DENIED;
+            grantResults[i] = VirtualPermissionManager.isPermissionGranted(packageName, userId, permissions[i])
+                    ? PackageManager.PERMISSION_GRANTED : PackageManager.PERMISSION_DENIED;
         }
 
         Log.d(TAG, "Virtual runtime permission request: pkg=" + packageName
