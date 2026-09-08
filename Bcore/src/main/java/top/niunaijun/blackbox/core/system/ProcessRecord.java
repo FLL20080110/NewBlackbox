@@ -39,14 +39,23 @@ public class ProcessRecord extends Binder {
         this.processName = processName;
     }
 
-    public void beginInitialization() {
+    public synchronized void beginInitialization() {
         initLock.close();
         initSucceeded = false;
         initializing = true;
         initStartedAt = SystemClock.uptimeMillis();
     }
 
-    public void finishInitialization(boolean success) {
+    /**
+     * Finish the current initialization attempt exactly once. A death callback can race with the
+     * provider handshake; in that case the first completion wins so a late successful return can
+     * never resurrect a record that has already been removed as dead.
+     */
+    public synchronized void finishInitialization(boolean success) {
+        if (!initializing) {
+            initLock.open();
+            return;
+        }
         initSucceeded = success;
         initializing = false;
         initLock.open();
