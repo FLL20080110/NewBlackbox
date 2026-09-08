@@ -2,10 +2,7 @@ package top.niunaijun.blackbox.core.system;
 
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.util.Log;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -19,16 +16,12 @@ import top.niunaijun.blackbox.core.system.am.BJobManagerService;
 import top.niunaijun.blackbox.core.system.location.BLocationManagerService;
 import top.niunaijun.blackbox.core.system.notification.BNotificationManagerService;
 import top.niunaijun.blackbox.core.system.os.BStorageManagerService;
+import top.niunaijun.blackbox.core.system.permission.BPermissionManagerService;
 import top.niunaijun.blackbox.core.system.pm.BPackageInstallerService;
 import top.niunaijun.blackbox.core.system.pm.BPackageManagerService;
-
 import top.niunaijun.blackbox.core.system.user.BUserHandle;
 import top.niunaijun.blackbox.core.system.user.BUserManagerService;
 import top.niunaijun.blackbox.entity.pm.InstallOption;
-import top.niunaijun.blackbox.utils.FileUtils;
-
-import top.niunaijun.blackbox.core.system.JarManager;
-
 
 public class BlackBoxSystem {
     private static BlackBoxSystem sBlackBoxSystem;
@@ -47,8 +40,7 @@ public class BlackBoxSystem {
     }
 
     public void startup() {
-        if (isStartup.getAndSet(true))
-            return;
+        if (isStartup.getAndSet(true)) return;
         BEnvironment.load();
 
         mServices.add(BPackageManagerService.get());
@@ -57,11 +49,11 @@ public class BlackBoxSystem {
         mServices.add(BJobManagerService.get());
         mServices.add(BStorageManagerService.get());
         mServices.add(BPackageInstallerService.get());
-
         mServices.add(BProcessManagerService.get());
         mServices.add(BAccountManagerService.get());
         mServices.add(BLocationManagerService.get());
         mServices.add(BNotificationManagerService.get());
+        mServices.add(BPermissionManagerService.get());
 
         for (ISystemService service : mServices) {
             service.systemReady();
@@ -72,15 +64,13 @@ public class BlackBoxSystem {
             try {
                 if (!BPackageManagerService.get().isInstalled(preInstallPackage, BUserHandle.USER_ALL)) {
                     PackageInfo packageInfo = BlackBoxCore.getPackageManager().getPackageInfo(preInstallPackage, 0);
-                    BPackageManagerService.get().installPackageAsUser(packageInfo.applicationInfo.sourceDir, InstallOption.installBySystem(), BUserHandle.USER_ALL);
+                    BPackageManagerService.get().installPackageAsUser(packageInfo.applicationInfo.sourceDir,
+                            InstallOption.installBySystem(), BUserHandle.USER_ALL);
                 }
             } catch (PackageManager.NameNotFoundException ignored) {
             }
         }
-        
+
         JarManager.getInstance().initializeAsync();
-        
-        
-     
     }
 }
