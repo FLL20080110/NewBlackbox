@@ -24,6 +24,10 @@
         android:enableOnBackInvokedCallback="true"
         tools:targetApi="n">
         <activity
+            android:name=".view.permissions.VirtualPermissionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true" />
+        <activity
             android:name=".view.fake.FollowMyLocationOverlay"
             android:exported="false" />
         <activity android:name=".view.setting.SettingActivity" />
