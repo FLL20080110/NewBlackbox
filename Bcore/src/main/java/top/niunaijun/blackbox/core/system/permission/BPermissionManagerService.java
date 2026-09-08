@@ -1,6 +1,8 @@
 package top.niunaijun.blackbox.core.system.permission;
 
 import android.Manifest;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.util.AtomicFile;
@@ -26,6 +28,7 @@ import top.niunaijun.blackbox.utils.Slog;
 /** Container-owned permission state for virtual packages. */
 public final class BPermissionManagerService extends IBPermissionManagerService.Stub implements ISystemService {
     private static final String TAG = "BPermissionManagerService";
+    private static final String LEGACY_PREFS = "blackbox_virtual_permissions";
     private static final int STATE_DEFAULT = 0;
     private static final int STATE_GRANTED = 1;
     private static final int STATE_DENIED = 2;
@@ -229,7 +232,15 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
         mLoaded = true;
         File file = new File(BlackBoxCore.getContext().getFilesDir(), "blackbox_virtual_permissions.json");
         mStateFile = new AtomicFile(file);
-        if (!file.exists()) return;
+        if (file.exists()) {
+            loadStateFileLocked(file);
+        }
+        if (migrateLegacyPreferencesLocked()) {
+            saveLocked();
+        }
+    }
+
+    private void loadStateFileLocked(File file) {
         try (FileInputStream in = mStateFile.openRead()) {
             byte[] data = new byte[(int) file.length()];
             int offset = 0;
@@ -252,7 +263,6 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
                     if (pkg == null) continue;
                     String name = pkg.optString("name", null);
                     if (name == null) continue;
-                    // "permissions" is the legacy granted-only format; keep migration support.
                     loadPermissionArrayLocked(mGranted, name, userId, pkg.optJSONArray("permissions"));
                     loadPermissionArrayLocked(mGranted, name, userId, pkg.optJSONArray("granted"));
                     loadPermissionArrayLocked(mDenied, name, userId, pkg.optJSONArray("denied"));
@@ -261,6 +271,48 @@ public final class BPermissionManagerService extends IBPermissionManagerService.
             }
         } catch (Throwable e) {
             Slog.e(TAG, "Unable to load virtual permissions: " + e.getMessage());
+        }
+    }
+
+    private boolean migrateLegacyPreferencesLocked() {
+        try {
+            SharedPreferences prefs = BlackBoxCore.getContext()
+                    .getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE);
+            Map<String, ?> entries = prefs.getAll();
+            if (entries == null || entries.isEmpty()) return false;
+
+            boolean migrated = false;
+            for (Map.Entry<String, ?> entry : entries.entrySet()) {
+                Object value = entry.getValue();
+                if (!(value instanceof Boolean)) continue;
+                String key = entry.getKey();
+                int first = key.indexOf('|');
+                int second = first < 0 ? -1 : key.indexOf('|', first + 1);
+                if (first <= 0 || second <= first + 1 || second >= key.length() - 1) continue;
+                int userId;
+                try {
+                    userId = Integer.parseInt(key.substring(0, first));
+                } catch (NumberFormatException ignored) {
+                    continue;
+                }
+                String packageName = key.substring(first + 1, second);
+                String permission = key.substring(second + 1);
+                if (VirtualPermissionManager.isManagedRuntimePermission(permission)
+                        && !isPermissionDeclared(packageName, userId, permission)) {
+                    continue;
+                }
+                setPermissionStateLocked(packageName, userId, permission,
+                        (Boolean) value ? STATE_GRANTED : STATE_DENIED);
+                migrated = true;
+            }
+            if (migrated) {
+                prefs.edit().clear().apply();
+                Slog.d(TAG, "Migrated legacy SharedPreferences virtual permission state");
+            }
+            return migrated;
+        } catch (Throwable e) {
+            Slog.w(TAG, "Unable to migrate legacy virtual permissions: " + e.getMessage());
+            return false;
         }
     }
 
