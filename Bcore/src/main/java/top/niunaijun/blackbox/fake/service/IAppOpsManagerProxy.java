@@ -144,8 +144,7 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
         if (args == null) return null;
         for (Object arg : args) {
             if (arg instanceof Integer) {
-                String opName = getOpPublicName((Integer) arg);
-                String permission = permissionForOpName(opName);
+                String permission = permissionForOpName(getOpPublicName((Integer) arg));
                 if (permission != null) return permission;
             } else if (arg instanceof String) {
                 String permission = permissionForOpName((String) arg);
@@ -165,13 +164,29 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
         if (n.contains("RECORD_AUDIO") || n.contains("MICROPHONE")) return Manifest.permission.RECORD_AUDIO;
         if (n.contains("READ_CONTACTS")) return Manifest.permission.READ_CONTACTS;
         if (n.contains("WRITE_CONTACTS")) return Manifest.permission.WRITE_CONTACTS;
+        if (n.contains("GET_ACCOUNTS")) return Manifest.permission.GET_ACCOUNTS;
         if (n.contains("READ_CALENDAR")) return Manifest.permission.READ_CALENDAR;
         if (n.contains("WRITE_CALENDAR")) return Manifest.permission.WRITE_CALENDAR;
+        if (n.contains("READ_MEDIA_IMAGES") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.READ_MEDIA_IMAGES;
+        if (n.contains("READ_MEDIA_VIDEO") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.READ_MEDIA_VIDEO;
+        if (n.contains("READ_MEDIA_AUDIO") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.READ_MEDIA_AUDIO;
+        if (n.contains("READ_EXTERNAL_STORAGE")) return Manifest.permission.READ_EXTERNAL_STORAGE;
+        if (n.contains("WRITE_EXTERNAL_STORAGE")) return Manifest.permission.WRITE_EXTERNAL_STORAGE;
+        if (n.contains("READ_PHONE_NUMBERS") && android.os.Build.VERSION.SDK_INT >= 26) return Manifest.permission.READ_PHONE_NUMBERS;
         if (n.contains("READ_PHONE_STATE")) return Manifest.permission.READ_PHONE_STATE;
         if (n.contains("CALL_PHONE")) return Manifest.permission.CALL_PHONE;
+        if (n.contains("ANSWER_PHONE_CALLS") && android.os.Build.VERSION.SDK_INT >= 26) return Manifest.permission.ANSWER_PHONE_CALLS;
+        if (n.contains("SEND_SMS")) return Manifest.permission.SEND_SMS;
+        if (n.contains("RECEIVE_SMS")) return Manifest.permission.RECEIVE_SMS;
+        if (n.contains("READ_SMS")) return Manifest.permission.READ_SMS;
+        if (n.contains("RECEIVE_MMS")) return Manifest.permission.RECEIVE_MMS;
+        if (n.contains("RECEIVE_WAP_PUSH")) return Manifest.permission.RECEIVE_WAP_PUSH;
+        if (n.contains("ACTIVITY_RECOGNITION") && android.os.Build.VERSION.SDK_INT >= 29) return Manifest.permission.ACTIVITY_RECOGNITION;
+        if (n.contains("BODY_SENSORS_BACKGROUND") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.BODY_SENSORS_BACKGROUND;
         if (n.contains("BODY_SENSORS")) return Manifest.permission.BODY_SENSORS;
         if (n.contains("BLUETOOTH_SCAN") && android.os.Build.VERSION.SDK_INT >= 31) return Manifest.permission.BLUETOOTH_SCAN;
         if (n.contains("BLUETOOTH_CONNECT") && android.os.Build.VERSION.SDK_INT >= 31) return Manifest.permission.BLUETOOTH_CONNECT;
+        if (n.contains("BLUETOOTH_ADVERTISE") && android.os.Build.VERSION.SDK_INT >= 31) return Manifest.permission.BLUETOOTH_ADVERTISE;
         if (n.contains("NEARBY_WIFI") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.NEARBY_WIFI_DEVICES;
         if (n.contains("POST_NOTIFICATION") && android.os.Build.VERSION.SDK_INT >= 33) return Manifest.permission.POST_NOTIFICATIONS;
         return null;
