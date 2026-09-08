@@ -1,12 +1,10 @@
 package top.niunaijun.blackboxa.view.permissions
 
-import android.Manifest
 import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import top.niunaijun.blackbox.BlackBoxCore
-import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager
 import top.niunaijun.blackboxa.R
 
 class VirtualPermissionActivity : AppCompatActivity() {
@@ -26,37 +24,20 @@ class VirtualPermissionActivity : AppCompatActivity() {
             return
         }
 
-        val labels = arrayOf(
-            getString(R.string.permission_coarse_location),
-            getString(R.string.permission_fine_location),
-            getString(R.string.permission_background_location)
-        )
-        val checked = booleanArrayOf(
-            VirtualPermissionManager.isCoarseLocationGranted(packageName, userId),
-            VirtualPermissionManager.isFineLocationGranted(packageName, userId),
-            VirtualPermissionManager.isBackgroundLocationGranted(packageName, userId)
-        )
+        val permissions = VirtualPermissionUi.requestedPermissions(packageName, userId)
+        if (permissions.isEmpty()) {
+            Toast.makeText(this, "该应用没有可管理的运行时权限", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        val labels = VirtualPermissionUi.labels(this, permissions)
+        val checked = VirtualPermissionUi.checked(packageName, userId, permissions)
 
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.virtual_permissions_title, packageName))
-            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
             .setPositiveButton(R.string.done) { _, _ ->
-                val coarse = checked[0] || checked[1] || checked[2]
-                val fine = checked[1]
-                val background = checked[2]
-
-                VirtualPermissionManager.setPermission(
-                    packageName, userId, Manifest.permission.ACCESS_COARSE_LOCATION, coarse
-                )
-                VirtualPermissionManager.setPermission(
-                    packageName, userId, Manifest.permission.ACCESS_FINE_LOCATION, fine
-                )
-                VirtualPermissionManager.setPermission(
-                    packageName, userId, Manifest.permission.ACCESS_BACKGROUND_LOCATION, background
-                )
-
+                VirtualPermissionUi.save(packageName, userId, permissions, checked)
                 try {
                     BlackBoxCore.get().stopPackage(packageName, userId)
                 } catch (_: Throwable) {
