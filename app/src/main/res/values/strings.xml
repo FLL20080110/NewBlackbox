@@ -27,6 +27,12 @@
     <string name="done">Done</string>
     <string name="cancel">Cancel</string>
     <string name="permission_setting">Setting</string>
+    <string name="virtual_permissions">Virtual Permissions</string>
+    <string name="virtual_permissions_title">Permissions for %s</string>
+    <string name="permission_coarse_location">Approximate location</string>
+    <string name="permission_fine_location">Precise location</string>
+    <string name="permission_background_location">Background location</string>
+    <string name="virtual_permissions_saved">Virtual permissions saved. Restart the app to apply.</string>
     <string name="no_reminders">No Reminders</string>
     <string name="app_stop">Stop Running</string>
     <string name="app_stop_hint">Do you want to stop %s forcibly?</string>
