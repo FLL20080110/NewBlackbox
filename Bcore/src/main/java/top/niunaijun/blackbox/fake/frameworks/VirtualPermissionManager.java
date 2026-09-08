@@ -7,19 +7,32 @@ import android.os.RemoteException;
 import top.niunaijun.blackbox.core.system.ServiceManager;
 import top.niunaijun.blackbox.core.system.permission.IBPermissionManagerService;
 
-/** Client facade for container-owned guest permission state. */
+/**
+ * Client facade for container-owned guest permission state.
+ *
+ * All processes talk to the BlackBox system process over Binder so permission changes are
+ * immediately visible to guest processes. This intentionally does not use Android's real host
+ * UID/package permission state.
+ */
 public final class VirtualPermissionManager extends BlackManager<IBPermissionManagerService> {
     public static final int STATE_DEFAULT = 0;
     public static final int STATE_GRANTED = 1;
     public static final int STATE_DENIED = 2;
+    public static final int STATE_DENIED_FIXED = 3;
 
     private static final VirtualPermissionManager sManager = new VirtualPermissionManager();
-    private VirtualPermissionManager() {}
 
-    public static VirtualPermissionManager get() { return sManager; }
+    private VirtualPermissionManager() {
+    }
+
+    public static VirtualPermissionManager get() {
+        return sManager;
+    }
 
     @Override
-    protected String getServiceName() { return ServiceManager.PERMISSION_MANAGER; }
+    protected String getServiceName() {
+        return ServiceManager.PERMISSION_MANAGER;
+    }
 
     public static void setPermission(String packageName, int userId, String permission, boolean granted) {
         if (packageName == null || permission == null) return;
@@ -34,6 +47,7 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
 
     public static void setPermissionState(String packageName, int userId, String permission, int state) {
         if (packageName == null || permission == null) return;
+        if (state < STATE_DEFAULT || state > STATE_DENIED_FIXED) state = STATE_DEFAULT;
         IBPermissionManagerService service = get().getService();
         if (service == null) return;
         try {
@@ -67,7 +81,15 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
     }
 
     public static boolean isPermissionGranted(String packageName, int userId, String permission) {
-        return getPermissionState(packageName, userId, permission) == STATE_GRANTED;
+        if (packageName == null || permission == null) return false;
+        IBPermissionManagerService service = get().getService();
+        if (service == null) return false;
+        try {
+            return service.isPermissionGranted(packageName, userId, permission);
+        } catch (RemoteException ignored) {
+            get().clearServiceCache();
+            return false;
+        }
     }
 
     public static int checkPermission(String packageName, int userId, String permission) {
