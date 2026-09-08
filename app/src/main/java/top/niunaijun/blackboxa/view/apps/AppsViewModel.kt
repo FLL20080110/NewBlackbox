@@ -5,7 +5,6 @@ import top.niunaijun.blackboxa.bean.AppInfo
 import top.niunaijun.blackboxa.data.AppsRepository
 import top.niunaijun.blackboxa.view.base.BaseViewModel
 import android.util.Log
-import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager
 
 class AppsViewModel(private val repo: AppsRepository) : BaseViewModel() {
 
@@ -39,17 +38,11 @@ class AppsViewModel(private val repo: AppsRepository) : BaseViewModel() {
     }
 
     fun unInstall(packageName: String, userID: Int) {
-        launchOnUI {
-            VirtualPermissionManager.clearPackage(packageName, userID)
-            repo.unInstall(packageName, userID, resultLiveData)
-        }
+        launchOnUI { repo.unInstall(packageName, userID, resultLiveData) }
     }
 
     fun clearApkData(packageName: String, userID: Int) {
-        launchOnUI {
-            VirtualPermissionManager.clearPackage(packageName, userID)
-            repo.clearApkData(packageName, userID, resultLiveData)
-        }
+        launchOnUI { repo.clearApkData(packageName, userID, resultLiveData) }
     }
 
     fun launchApk(packageName: String, userID: Int) {
