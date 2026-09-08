@@ -6,16 +6,20 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.os.PersistableBundle;
 import android.util.Log;
 
 import java.lang.reflect.Field;
+import java.util.Arrays;
 
 import black.android.app.BRActivity;
 import black.android.app.BRActivityThread;
 import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.app.BActivityThread;
+import top.niunaijun.blackbox.fake.frameworks.VirtualPermissionManager;
 import top.niunaijun.blackbox.fake.hook.HookManager;
 import top.niunaijun.blackbox.fake.hook.IInjectHook;
 import top.niunaijun.blackbox.fake.service.HCallbackProxy;
@@ -28,6 +32,8 @@ import top.niunaijun.blackbox.utils.compat.ContextCompat;
 public final class AppInstrumentation extends BaseInstrumentationDelegate implements IInjectHook {
 
     private static final String TAG = AppInstrumentation.class.getSimpleName();
+    private static final String ACTION_REQUEST_PERMISSIONS = "android.content.pm.action.REQUEST_PERMISSIONS";
+    private static final String EXTRA_REQUEST_PERMISSIONS_NAMES = "android.content.pm.extra.REQUEST_PERMISSIONS_NAMES";
 
     private static AppInstrumentation sAppInstrumentation;
 
@@ -146,5 +152,69 @@ public final class AppInstrumentation extends BaseInstrumentationDelegate implem
         } catch (ClassNotFoundException e) {
             return mBaseInstrumentation.newActivity(cl, className, intent);
         }
+    }
+
+    /**
+     * Activity.requestPermissions() is implemented as an Instrumentation start of the
+     * permission controller activity. A virtual guest has no real package record in
+     * the host PackageManager, so Android's controller cannot produce a meaningful
+     * result for that guest. For location-only requests, answer from the container's
+     * per-app virtual permission store and deliver the normal Activity callback.
+     */
+    public ActivityResult execStartActivity(Context context, IBinder contextThread, IBinder token,
+                                            Activity activity, Intent intent, int requestCode,
+                                            Bundle options) throws Throwable {
+        if (handleVirtualPermissionRequest(activity, intent, requestCode)) {
+            return null;
+        }
+        return super.execStartActivity(context, contextThread, token, activity, intent, requestCode, options);
+    }
+
+    private boolean handleVirtualPermissionRequest(Activity activity, Intent intent, int requestCode) {
+        if (activity == null || intent == null || !ACTION_REQUEST_PERMISSIONS.equals(intent.getAction())) {
+            return false;
+        }
+
+        String[] permissions = intent.getStringArrayExtra(EXTRA_REQUEST_PERMISSIONS_NAMES);
+        if (permissions == null || permissions.length == 0) {
+            return false;
+        }
+
+        // Only consume requests that are entirely location permissions. Mixed requests
+        // continue through Android so unrelated permission behavior is unchanged.
+        for (String permission : permissions) {
+            if (!VirtualPermissionManager.isLocationPermission(permission)) {
+                return false;
+            }
+        }
+
+        final String packageName = BActivityThread.getAppPackageName();
+        final int userId = BActivityThread.getUserId();
+        if (packageName == null) {
+            return false;
+        }
+
+        final int[] grantResults = new int[permissions.length];
+        for (int i = 0; i < permissions.length; i++) {
+            grantResults[i] = VirtualPermissionManager.isPermissionGranted(
+                    packageName, userId, permissions[i])
+                    ? PackageManager.PERMISSION_GRANTED
+                    : PackageManager.PERMISSION_DENIED;
+        }
+
+        Log.d(TAG, "Virtual runtime permission request: pkg=" + packageName
+                + ", user=" + userId
+                + ", permissions=" + Arrays.toString(permissions)
+                + ", results=" + Arrays.toString(grantResults));
+
+        final String[] callbackPermissions = permissions.clone();
+        activity.runOnUiThread(() -> {
+            try {
+                activity.onRequestPermissionsResult(requestCode, callbackPermissions, grantResults);
+            } catch (Throwable callbackError) {
+                Log.e(TAG, "Failed to deliver virtual permission result", callbackError);
+            }
+        });
+        return true;
     }
 }
