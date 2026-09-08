@@ -36,6 +36,7 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
     public static final String GROUP_NOTIFICATIONS = "notifications";
     public static final String GROUP_OTHER = "other";
 
+    private static final String PERMISSION_ADD_VOICEMAIL = "com.android.voicemail.permission.ADD_VOICEMAIL";
     private static final VirtualPermissionManager sManager = new VirtualPermissionManager();
 
     private VirtualPermissionManager() {
@@ -165,7 +166,7 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
             case "android.permission.READ_PHONE_NUMBERS":
             case "android.permission.CALL_PHONE":
             case "android.permission.ANSWER_PHONE_CALLS":
-            case "android.permission.ADD_VOICEMAIL":
+            case PERMISSION_ADD_VOICEMAIL:
             case "android.permission.USE_SIP":
             case "android.permission.PROCESS_OUTGOING_CALLS":
             case "android.permission.SEND_SMS":
@@ -187,10 +188,6 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
         }
     }
 
-    /**
-     * Logical UI group only. Grant state remains stored per concrete permission so modern Android
-     * semantics are not reduced to one bit per permission group.
-     */
     public static String getPermissionGroup(String permission) {
         if (permission == null) return GROUP_OTHER;
         switch (permission) {
@@ -221,7 +218,7 @@ public final class VirtualPermissionManager extends BlackManager<IBPermissionMan
             case "android.permission.READ_PHONE_NUMBERS":
             case "android.permission.CALL_PHONE":
             case "android.permission.ANSWER_PHONE_CALLS":
-            case "android.permission.ADD_VOICEMAIL":
+            case PERMISSION_ADD_VOICEMAIL:
             case "android.permission.USE_SIP":
             case "android.permission.PROCESS_OUTGOING_CALLS":
                 return GROUP_PHONE;
