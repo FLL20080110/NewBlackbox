@@ -13,16 +13,12 @@ import top.niunaijun.blackbox.fake.service.base.ValueMethodProxy;
 import top.niunaijun.blackbox.utils.Slog;
 import top.niunaijun.blackbox.utils.compat.BuildCompat;
 
-/**
- * PermissionManager facade for virtual guests.
- *
- * Runtime permission checks for a guest must never fall through to Android's host-package
- * permission record. The host UID and the virtual guest have different permission state, so all
- * permissions managed by VirtualPermissionManager are answered from the container service.
- */
+/** PermissionManager facade for virtual guests. */
 public class IPermissionManagerProxy extends BinderInvocationStub {
     public static final String TAG = "IPermissionManagerProxy";
     private static final String P = "permissionmgr";
+    private static final int FLAG_PERMISSION_USER_SET = 1 << 0;
+    private static final int FLAG_PERMISSION_USER_FIXED = 1 << 1;
 
     public IPermissionManagerProxy() {
         super(BRServiceManager.get().getService(P));
@@ -62,13 +58,22 @@ public class IPermissionManagerProxy extends BinderInvocationStub {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         String permission = findManagedPermission(args);
-        if (permission != null && isPermissionCheck(method.getName())) {
-            String packageName = BActivityThread.getAppPackageName();
-            if (packageName != null) {
+        String packageName = BActivityThread.getAppPackageName();
+        if (permission != null && packageName != null) {
+            if (isPermissionCheck(method.getName())) {
                 int result = VirtualPermissionManager.checkPermission(
                         packageName, BActivityThread.getUserId(), permission);
                 Slog.d(TAG, "Virtual permission " + permission + " for " + packageName + " => " + result);
                 return result;
+            }
+            if ("getPermissionFlags".equals(method.getName())) {
+                int state = VirtualPermissionManager.getPermissionState(
+                        packageName, BActivityThread.getUserId(), permission);
+                if (state == VirtualPermissionManager.STATE_DEFAULT) return 0;
+                if (state == VirtualPermissionManager.STATE_DENIED_FIXED) {
+                    return FLAG_PERMISSION_USER_SET | FLAG_PERMISSION_USER_FIXED;
+                }
+                return FLAG_PERMISSION_USER_SET;
             }
         }
         return super.invoke(proxy, method, args);
