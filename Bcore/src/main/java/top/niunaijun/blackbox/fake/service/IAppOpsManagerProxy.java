@@ -52,17 +52,35 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
                 Slog.d(TAG, "AppOps " + methodName + " -> virtual mode " + virtualMode);
                 return virtualMode;
             }
-            return AppOpsManager.MODE_ALLOWED;
+            // Unrelated operations are not virtual runtime permissions. Do not manufacture an
+            // ALLOWED result; ask the real service using the host identity instead.
+            return invokeOriginal(method, args);
         }
-        if (methodName.startsWith("finish")) return null;
+        if (methodName.startsWith("finish")) {
+            try {
+                invokeOriginal(method, args);
+            } catch (Throwable ignored) {
+            }
+            return null;
+        }
 
         try {
-            MethodParameterUtils.replaceFirstAppPkg(args);
-            MethodParameterUtils.replaceLastUid(args);
             return super.invoke(proxy, method, args);
         } catch (Throwable e) {
             Slog.w(TAG, "AppOps fallback for " + methodName + ": " + e.getMessage());
             return defaultValue(method.getReturnType());
+        }
+    }
+
+    private Object invokeOriginal(Method method, Object[] args) throws Throwable {
+        try {
+            MethodParameterUtils.replaceFirstAppPkg(args);
+            MethodParameterUtils.replaceLastUid(args);
+            return method.invoke(getBase(), args);
+        } catch (Throwable e) {
+            Throwable cause = e.getCause();
+            if (cause != null) throw cause;
+            throw e;
         }
     }
 
@@ -142,14 +160,21 @@ public class IAppOpsManagerProxy extends BinderInvocationStub {
 
     private static String permissionFromArgs(Object[] args) {
         if (args == null) return null;
+        // String op/public names are unambiguous, inspect them before numeric candidates.
         for (Object arg : args) {
-            if (arg instanceof Integer) {
-                String permission = permissionForOpName(getOpPublicName((Integer) arg));
-                if (permission != null) return permission;
-            } else if (arg instanceof String) {
+            if (arg instanceof String) {
                 String permission = permissionForOpName((String) arg);
                 if (permission != null) return permission;
             }
+        }
+        for (Object arg : args) {
+            if (!(arg instanceof Integer)) continue;
+            int candidate = (Integer) arg;
+            // Android UIDs normally start at 10000. App-op codes are small non-negative integers;
+            // this prevents a UID from being accidentally interpreted as an operation code.
+            if (candidate < 0 || candidate >= 10000) continue;
+            String permission = permissionForOpName(getOpPublicName(candidate));
+            if (permission != null) return permission;
         }
         return null;
     }
